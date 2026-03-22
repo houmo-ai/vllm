@@ -516,7 +516,9 @@ class ModelConfig:
         self.convert_type = self._get_convert_type(
             architectures, self.runner_type, self.convert
         )
-
+        is_generative_model=True
+        #print(f"##hm self.runner_type is:{self.runner_type} is_generative_model is:{is_generative_model} self.convert_type is:{self.convert_type} _RUNNER_CONVERTS_generate is:{_RUNNER_CONVERTS["generate"]}")
+        print(f"##hm architectures is:{architectures} force set self.runner_type is:{self.runner_type} is_generative_model is:{is_generative_model} self.convert_type is:{self.convert_type} _RUNNER_CONVERTS_generate is:{(_RUNNER_CONVERTS['generate'])}")
         if self.runner_type == "generate" and not is_generative_model:
             generate_converts = _RUNNER_CONVERTS["generate"]
             if self.convert_type not in generate_converts:

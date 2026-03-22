@@ -238,6 +238,9 @@ class OpenAIServingResponses(OpenAIServing):
             # We need to add them to the stop token ids.
             if "stop_token_ids" not in self.default_sampling_params:
                 self.default_sampling_params["stop_token_ids"] = []
+                #print(f"##hm @@@@ stop_token_ids not in 2")
+                #self.default_sampling_params["stop_token_ids"] = [200002,199999,200012]
+
             self.default_sampling_params["stop_token_ids"].extend(
                 get_stop_tokens_for_assistant_actions()
             )

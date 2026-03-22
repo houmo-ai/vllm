@@ -23,14 +23,15 @@ from typing import (
     get_args,
     get_origin,
 )
-
+import time
 import huggingface_hub
 import regex as re
 import torch
 from pydantic import TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from typing_extensions import TypeIs
-
+import os
+from vllm.transformers_utils.utils import parse_gguf,VLLMMemoryMonitor
 import vllm.envs as envs
 from vllm.config import (
     AttentionConfig,
@@ -1374,6 +1375,35 @@ class EngineArgs:
                 "launched vLLM.",
                 self.seed,
             )
+
+        start_time = time.time()
+        vllm_target_device_name = os.getenv('VLLM_TARGET_DEVICE')
+        if vllm_target_device_name!="cpu":
+            try:
+                parse_gguf(self.model,self.additional_config)
+            except Exception as e:
+                # 捕获异常并处理
+                logger.error(f"发生错误: {e}")
+                globa_gguf_metainfo={}
+                globa_gguf_metainfo['configfiles_ingguf_info']=[]
+                globa_gguf_metainfo['hmm_ingguf_info']={}
+
+                if self.additional_config is not None and isinstance(self.additional_config, dict):
+                    self.additional_config["globa_gguf_metainfo"]=globa_gguf_metainfo
+        end_time = time.time()  # 获取结束时间-计算耗时精确到ms
+        elapsed_time_ms = (end_time - start_time) * 1000
+        print(f"##hm read all gguf hmm firsttime  and parse_gguf func cost time: {elapsed_time_ms:.3f} ms")
+
+        if 0:#启动内存监控
+            monitor = VLLMMemoryMonitor(
+                inter_second=600,  # 每10分钟监控一次
+                top_count=20,      # 显示TOP20的增长项
+                snapshot_dir="./tracemalloc_dir_szj"  # 快照保存目录
+            )
+
+            # 2. 启动监控
+            monitor.start_monitor()
+
 
         return ModelConfig(
             model=self.model,

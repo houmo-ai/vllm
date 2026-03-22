@@ -402,6 +402,7 @@ class GPUModelRunner(
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
+        #logger.info(f"##hm gpumodel runner inited..")
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -3102,6 +3103,9 @@ class GPUModelRunner(
     ) -> SamplerOutput:
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
+        sampling_metadata.all_greedy=True
+        sampling_metadata.all_random=False
+        #logger.error(f"##hm force set sampling_metadata.all_greedy to True")
         # Update output token ids with tokens sampled in last step
         # if async scheduling and required by current sampling params.
         self.input_batch.update_async_output_token_ids()
@@ -3863,6 +3867,9 @@ class GPUModelRunner(
                 assert broadcasted is not None
                 logits = broadcasted["logits"]
 
+        #logger.info(f"##hm logits type is:{type(logits)}  with shape:{logits.shape} with content:{logits}")
+        #logger.info(f"##hm hidden_states type is:{type(hidden_states)} with shape:{hidden_states.shape} with content:{hidden_states}")
+
         self.execute_model_state = ExecuteModelState(
             scheduler_output,
             logits,
@@ -3889,15 +3896,18 @@ class GPUModelRunner(
             if self.use_async_scheduling and get_pp_group().world_size > 1:
                 self._pp_receive_prev_sampled_token_ids_to_input_batch()
             if not kv_connector_output:
+                #logger.info(f"##hm rt s1")
                 return None  # type: ignore[return-value]
 
             # In case of PP with kv transfer, we need to pass through the
             # kv_connector_output
             if kv_connector_output.is_empty():
+                #logger.info(f"##hm rt s2")
                 return EMPTY_MODEL_RUNNER_OUTPUT
 
             output = copy(EMPTY_MODEL_RUNNER_OUTPUT)
             output.kv_connector_output = kv_connector_output
+            #logger.info(f"##hm rt s3")
             return output
 
         # Unpack ephemeral state.
@@ -4088,6 +4098,7 @@ class GPUModelRunner(
             )
 
         if not self.use_async_scheduling:
+            logger.info(f"##hm rt s4 valid_sampled_token_ids is:{valid_sampled_token_ids}")
             return output
 
         with record_function_or_nullcontext(
@@ -4110,7 +4121,7 @@ class GPUModelRunner(
                 async_output.sampled_token_ids_cpu,
                 async_output.async_copy_ready_event,
             )
-
+        #logger.info(f"##hm rt s5")
         return async_output
 
     def _pp_broadcast_prev_sampled_token_ids(

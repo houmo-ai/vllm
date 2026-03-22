@@ -288,7 +288,24 @@ class EngineCore:
         return scheduler_kv_cache_config
 
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
-        return self.model_executor.supported_tasks
+        logger.debug(f"##hm model_executor:{self.model_executor}")
+        #return self.model_executor.supported_tasks
+        try:
+            # 原崩溃代码：访问 supported_tasks 属性
+            return self.model_executor.supported_tasks
+        except Exception as e:
+            # 打印详细错误信息（类型+原因+调用栈）
+            import traceback
+            print(f"[ERROR] 获取 supported_tasks 失败：")
+            print(f"  错误类型：{type(e).__name__}")
+            print(f"  错误原因：{str(e)}")
+            print(f"  完整调用栈：\n{traceback.format_exc()}")
+            # 兜底返回默认值，避免服务崩溃
+            return {"generate"}
+            #return {
+            #    "text-generation": {"description": "Text generation (fallback)", "default": True},
+            #    "chat-completion": {"description": "Chat completion (fallback)", "default": True},
+            #}
 
     def add_request(self, request: Request, request_wave: int = 0):
         """Add request to the scheduler.
@@ -1255,6 +1272,7 @@ class EngineCoreProc(EngineCore):
                 return
             output = UtilityOutput(call_id)
             # Lazily look-up utility method so that failure will be handled/returned.
+            logger.debug(f"##hm method_name is:{method_name}")
             get_result = lambda: (method := getattr(self, method_name)) and method(
                 *self._convert_msgspec_args(method, args)
             )

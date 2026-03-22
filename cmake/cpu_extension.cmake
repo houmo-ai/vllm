@@ -81,6 +81,9 @@ else()
     find_isa(${CPUINFO} "S390" S390_FOUND)
     find_isa(${CPUINFO} "zvfhmin" RVV_FP16_FOUND) # Check for RISC-V Vector FP16 support
     find_isa(${CPUINFO} "zvfbfmin" RVV_BF16_FOUND) # Check for RISC-V Vector BF16 support
+    find_isa(${CPUINFO} "avx2" AVX2_FOUND)
+    find_isa(${CPUINFO} "avx512f" AVX512_FOUND)
+    find_isa(${CPUINFO} "avx512_bf16" AVX512BF16_FOUND)
 
     # Support cross-compilation by allowing override via environment variables
     if (ENABLE_ARM_BF16)
@@ -96,21 +99,35 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64" OR ENABLE_X86_ISA)
         message(FATAL_ERROR "X86 backend requires gcc/g++ >= 12.3")
     endif()
     list(APPEND CXX_COMPILE_FLAGS "-mf16c")
-    list(APPEND CXX_COMPILE_FLAGS_AVX512 ${CXX_COMPILE_FLAGS})
-    list(APPEND CXX_COMPILE_FLAGS_AVX2 ${CXX_COMPILE_FLAGS})
-    list(APPEND CXX_COMPILE_FLAGS_AVX512
-        "-mavx512f"
-        "-mavx512vl"
-        "-mavx512bw"
-        "-mavx512dq")
-    list(APPEND CXX_COMPILE_FLAGS_AVX512_AMX 
-        ${CXX_COMPILE_FLAGS_AVX512}
-        "-mamx-bf16"
-        "-mamx-tile"
-        "-mavx512bf16"
-        "-mavx512vnni")
-    list(APPEND CXX_COMPILE_FLAGS_AVX2
-        "-mavx2")
+    if (AVX512_FOUND OR ENABLE_AVX512BF16)
+        message(WARNING  "#hm cpu support avx512")
+        list(APPEND CXX_COMPILE_FLAGS_AVX512 ${CXX_COMPILE_FLAGS})
+        list(APPEND CXX_COMPILE_FLAGS_AVX2 ${CXX_COMPILE_FLAGS})
+        list(APPEND CXX_COMPILE_FLAGS_AVX512
+            "-mavx512f"
+            "-mavx512vl"
+            "-mavx512bw"
+            "-mavx512dq")
+        if(AVX512BF16_FOUND)
+            list(APPEND CXX_COMPILE_FLAGS_AVX512_AMX
+                ${CXX_COMPILE_FLAGS_AVX512}
+                "-mamx-bf16"
+                "-mamx-tile"
+                "-mavx512bf16"
+                "-mavx512vnni")
+        endif()
+    else()
+        message(WARNING  "##hm !!!cpu doesn't support avx512")
+    endif()
+
+    if(AVX2_FOUND)
+        message(WARNING  "##hm @@cpu support avx2 and call add_definitions -D AVX2")
+        add_definitions(-D__AVX2__)
+        add_compile_options(-mavx2 -mfma -mf16c -fopenmp)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2 -mfma -mf16c -fopenmp") #-mf16c -fopenmp
+        list(APPEND CXX_COMPILE_FLAGS_AVX2
+            "-mavx2")
+    endif()
 elseif (POWER9_FOUND OR POWER10_FOUND OR POWER11_FOUND)
     message(STATUS "PowerPC detected")
     if (POWER9_FOUND)
@@ -133,9 +150,9 @@ elseif (ASIMD_FOUND)
         add_compile_definitions(ARM_BF16_SUPPORT)
     else()
         message(WARNING "BF16 functionality is not available")
-        set(MARCH_FLAGS "-march=armv8.2-a+dotprod+fp16")  
+        set(MARCH_FLAGS "-march=armv8.2-a+dotprod+fp16")
     endif()
-    list(APPEND CXX_COMPILE_FLAGS ${MARCH_FLAGS})     
+    list(APPEND CXX_COMPILE_FLAGS ${MARCH_FLAGS})
 elseif (S390_FOUND)
     message(STATUS "S390 detected")
     # Check for S390 VXE support
@@ -164,7 +181,8 @@ endif()
 
 
 # Build oneDNN for GEMM kernels
-if (ENABLE_X86_ISA OR (ASIMD_FOUND AND NOT APPLE_SILICON_FOUND) OR POWER9_FOUND OR POWER10_FOUND OR POWER11_FOUND)
+#if (ENABLE_X86_ISA OR (ASIMD_FOUND AND NOT APPLE_SILICON_FOUND) OR POWER9_FOUND OR POWER10_FOUND OR POWER11_FOUND)
+if (0)
     # Fetch and build Arm Compute Library (ACL) as oneDNN's backend for AArch64
     # TODO [fadara01]: remove this once ACL can be fetched and built automatically as a dependency of oneDNN
     set(ONEDNN_AARCH64_USE_ACL OFF CACHE BOOL "")
@@ -209,15 +227,15 @@ if (ENABLE_X86_ISA OR (ASIMD_FOUND AND NOT APPLE_SILICON_FOUND) OR POWER9_FOUND 
 
         # Build ACL with CMake
         set(_cmake_config_cmd
-             ${CMAKE_COMMAND} -G Ninja -B build 
-            -DARM_COMPUTE_BUILD_SHARED_LIB=OFF 
-            -DCMAKE_BUILD_TYPE=Release 
-            -DARM_COMPUTE_ARCH=armv8.2-a 
-            -DARM_COMPUTE_ENABLE_ASSERTS=OFF 
-            -DARM_COMPUTE_ENABLE_CPPTHREADS=OFF 
-            -DARM_COMPUTE_ENABLE_OPENMP=ON 
-            -DARM_COMPUTE_ENABLE_WERROR=OFF 
-            -DARM_COMPUTE_BUILD_EXAMPLES=OFF 
+             ${CMAKE_COMMAND} -G Ninja -B build
+            -DARM_COMPUTE_BUILD_SHARED_LIB=OFF
+            -DCMAKE_BUILD_TYPE=Release
+            -DARM_COMPUTE_ARCH=armv8.2-a
+            -DARM_COMPUTE_ENABLE_ASSERTS=OFF
+            -DARM_COMPUTE_ENABLE_CPPTHREADS=OFF
+            -DARM_COMPUTE_ENABLE_OPENMP=ON
+            -DARM_COMPUTE_ENABLE_WERROR=OFF
+            -DARM_COMPUTE_BUILD_EXAMPLES=OFF
             -DARM_COMPUTE_BUILD_TESTING=OFF)
         set(_cmake_build_cmd
             ${CMAKE_COMMAND} --build build -- -j${NPROC}
@@ -251,6 +269,8 @@ if (ENABLE_X86_ISA OR (ASIMD_FOUND AND NOT APPLE_SILICON_FOUND) OR POWER9_FOUND 
             oneDNN
             SOURCE_DIR ${FETCHCONTENT_SOURCE_DIR_ONEDNN}
         )
+    elseif(1)
+        message(STATUS "##hm dont download oneDNN from GitHub")
     else()
         message(STATUS "Downloading oneDNN from GitHub")
         if(ASIMD_FOUND AND NOT APPLE_SILICON_FOUND)
@@ -362,13 +382,15 @@ if (ASIMD_FOUND AND NOT APPLE_SILICON_FOUND)
         ${VLLM_EXT_SRC})
 endif()
 
-if(USE_ONEDNN)
+#if(USE_ONEDNN)
+if (0)
     set(VLLM_EXT_SRC
         "csrc/cpu/dnnl_kernels.cpp"
         ${VLLM_EXT_SRC})
 endif()
 
-if (ENABLE_X86_ISA)
+#if (ENABLE_X86_ISA)
+if (0)
     set(VLLM_EXT_SRC_SGL
         "csrc/cpu/sgl-kernels/gemm.cpp"
         "csrc/cpu/sgl-kernels/gemm_int8.cpp"
@@ -390,9 +412,9 @@ if (ENABLE_X86_ISA)
         "csrc/cpu/layernorm.cpp"
         "csrc/cpu/mla_decode.cpp"
         "csrc/cpu/pos_encoding.cpp"
-        "csrc/moe/dynamic_4bit_int_moe_cpu.cpp") 
+        "csrc/moe/dynamic_4bit_int_moe_cpu.cpp")
 
-    set(VLLM_EXT_SRC_AVX2 
+    set(VLLM_EXT_SRC_AVX2
         "csrc/cpu/utils.cpp"
         "csrc/cpu/cpu_attn.cpp"
         "csrc/cpu/torch_bindings.cpp"
@@ -401,7 +423,7 @@ if (ENABLE_X86_ISA)
         "csrc/cpu/layernorm.cpp"
         "csrc/cpu/mla_decode.cpp"
         "csrc/cpu/pos_encoding.cpp"
-        "csrc/moe/dynamic_4bit_int_moe_cpu.cpp") 
+        "csrc/moe/dynamic_4bit_int_moe_cpu.cpp")
 
     message(STATUS "CPU extension (AVX512F + BF16 + VNNI + AMX) source files: ${VLLM_EXT_SRC_AVX512} ${VLLM_EXT_SRC_SGL}")
     message(STATUS "CPU extension (AVX512F) source files: ${VLLM_EXT_SRC_AVX512}")
@@ -426,7 +448,7 @@ if (ENABLE_X86_ISA)
     # For AMX kernels
     target_compile_definitions(_C PRIVATE "-DCPU_CAPABILITY_AMXBF16")
 
-    # AVX512F 
+    # AVX512F
     define_extension_target(
         _C_AVX512
         DESTINATION vllm
@@ -438,7 +460,7 @@ if (ENABLE_X86_ISA)
         WITH_SOABI
     )
 
-    # AVX2 
+    # AVX2
     define_extension_target(
         _C_AVX2
         DESTINATION vllm
@@ -450,7 +472,43 @@ if (ENABLE_X86_ISA)
         WITH_SOABI
     )
 else()
-    message(STATUS "CPU extension source files: ${VLLM_EXT_SRC}")
+    message(STATUS "##hm enable avx2 CPU extension source files: ${VLLM_EXT_SRC}")
+    vllm_prepare_torch_gomp_shim(VLLM_TORCH_GOMP_SHIM_DIR)
+
+    find_library(OPEN_MP
+        NAMES gomp
+        PATHS ${VLLM_TORCH_GOMP_SHIM_DIR}
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
+    # Set LD_LIBRARY_PATH to include the shim dir at build time to use the same libgomp as PyTorch
+    if (OPEN_MP)
+        message(STATUS "##hm found OPEN_MP")
+        set(ENV{LD_LIBRARY_PATH} "${VLLM_TORCH_GOMP_SHIM_DIR}:$ENV{LD_LIBRARY_PATH}")
+    endif()
+
+    set(VLLM_EXT_SRC_AVX2
+        "csrc/cpu/utils.cpp"
+        "csrc/cpu/cpu_attn.cpp"
+        "csrc/cpu/torch_bindings.cpp"
+        # TODO: Remove these files
+        "csrc/cpu/activation.cpp"
+        "csrc/cpu/layernorm.cpp"
+        "csrc/cpu/mla_decode.cpp"
+        "csrc/cpu/pos_encoding.cpp"
+        "csrc/moe/dynamic_4bit_int_moe_cpu.cpp")
+    set(_C_AVX2_LIBS numa)
+    # AVX2
+    define_extension_target(
+        _C_AVX2
+        DESTINATION vllm
+        LANGUAGE CXX
+        SOURCES ${VLLM_EXT_SRC_AVX2}
+        LIBRARIES ${_C_AVX2_LIBS}
+        COMPILE_FLAGS ${CXX_COMPILE_FLAGS_AVX2}
+        USE_SABI 3
+        WITH_SOABI
+    )
     #
     # Define extension targets
     #

@@ -679,9 +679,13 @@ class _ModelInfo:
 
     @staticmethod
     def from_model_cls(model: type[nn.Module]) -> "_ModelInfo":
+        print(f"##hm _ModelInfo.from_model_cls called with model: {model}")
+        print(f"##hm is_text_generation_model function: {is_text_generation_model}")
+        result = is_text_generation_model(model)
+        print(f"##hm is_text_generation_model result: {result}")
         return _ModelInfo(
             architecture=model.__name__,
-            is_text_generation_model=is_text_generation_model(model),
+            is_text_generation_model=result,
             is_pooling_model=is_pooling_model(model),
             default_seq_pooling_type=get_default_seq_pooling_type(model),
             default_tok_pooling_type=get_default_tok_pooling_type(model),
@@ -871,6 +875,7 @@ def _try_inspect_model_cls(
     model: _BaseRegisteredModel,
 ) -> _ModelInfo | None:
     try:
+        print(f"####hm model is:{model}")
         return model.inspect_model_cls()
     except Exception:
         logger.exception("Error in inspecting model architecture '%s'", model_arch)
@@ -1182,6 +1187,7 @@ class _ModelRegistry:
         model_config: ModelConfig,
     ) -> bool:
         model_cls, _ = self.inspect_model_cls(architectures, model_config)
+        print(f"##hm model_cls is:{model_cls}")
         return model_cls.is_text_generation_model
 
     def is_pooling_model(
@@ -1291,8 +1297,10 @@ def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
 
         # cannot use `sys.executable __file__` here because the script
         # contains relative imports
+        # Pass environment variables to subprocess
+        env = os.environ.copy()
         returned = subprocess.run(
-            _SUBPROCESS_COMMAND, input=input_bytes, capture_output=True
+            _SUBPROCESS_COMMAND, input=input_bytes, capture_output=True, env=env
         )
 
         # check if the subprocess is successful
@@ -1313,6 +1321,10 @@ def _run() -> None:
     from vllm.plugins import load_general_plugins
 
     load_general_plugins()
+
+    # Debug: print module location
+    import vllm.model_executor.models.interfaces_base as ib
+    print(f"##hm SUBPROCESS: interfaces_base location: {ib.__file__}", flush=True)
 
     fn, output_file = pickle.loads(sys.stdin.buffer.read())
 

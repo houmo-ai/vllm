@@ -29,7 +29,8 @@ from .conftest import (
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "openai/gpt-oss-20b"
+# 使用本地模型路径
+MODEL_NAME = "/home/user/szj_project/models/v1.0.0/gpt_oss_20b_128k/"
 
 GET_WEATHER_SCHEMA = {
     "type": "function",
@@ -99,11 +100,16 @@ def server():
         "Harmony tests require gpt_oss package to be installed"
     )
     args = [
+        #"--model", MODEL_NAME,  # 明确指定模型路径
         "--enforce-eager",
         "--tool-server",
         "demo",
         "--max_model_len",
         "5000",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "openai",
+        "--trust-remote-code",  # 如果需要自定义模型代码
     ]
     env_dict = {
         **BASE_TEST_ENV,
@@ -114,7 +120,7 @@ def server():
         ),
         "VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS": "1",
     }
-    with RemoteOpenAIServer(MODEL_NAME, args, env_dict=env_dict) as remote_server:
+    with RemoteOpenAIServer(MODEL_NAME, args, env_dict=env_dict,max_wait_seconds=300) as remote_server:
         yield remote_server
 
 

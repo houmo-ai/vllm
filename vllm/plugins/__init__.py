@@ -71,12 +71,16 @@ def load_general_plugins():
     processes. They should be designed in a way that they can be loaded
     multiple times without causing issues.
     """
+    logger.info(f"##hm call load_general_plugins")
     global plugins_loaded
     if plugins_loaded:
+        logger.info(f"##hm load_general_plugins return1")
         return
     plugins_loaded = True
 
     plugins = load_plugins_by_group(group=DEFAULT_PLUGINS_GROUP)
+    logger.info(f"##hm load_general_plugins return2 plugins are:{plugins}")
+
     # general plugins, we only need to execute the loaded functions
     for func in plugins.values():
         func()

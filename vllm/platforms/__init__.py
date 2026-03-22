@@ -258,7 +258,27 @@ _init_trace: str = ""
 
 if TYPE_CHECKING:
     current_platform: Platform
+else:
+    #current_platform: Platform = None
+    #hm 增加环境变量的设置
+    # 定义环境变量默认值映射表（键：环境变量名，值：默认值）
+    ENV_DEFAULTS = {
+        "HDPL_PLATFORM": "ASIC",
+        "TCIM_BACKEND": "Xh2HalBackend",
+        "HM_PLATFORM": "2",
+        "LLAMA_LOG_VERBOSITY": "99999999",
+        "VLLM_LOGGING_LEVEL": "WARNING"
+    }
 
+    # 遍历设置环境变量：存在则保留原值，不存在则设为默认值
+    for env_name, default_value in ENV_DEFAULTS.items():
+        # os.getenv 优先读取现有环境变量，返回 None 则使用默认值
+        current_value = os.getenv(env_name, default_value)
+        # 设置环境变量（覆盖/初始化）
+        os.environ[env_name] = current_value
+        # 可选：打印日志，确认环境变量最终值
+        print(f"env Key: {env_name} setto value: {os.environ[env_name]}")
+    logger.info("szj:default not set current_platform")
 
 def __getattr__(name: str):
     if name == "current_platform":

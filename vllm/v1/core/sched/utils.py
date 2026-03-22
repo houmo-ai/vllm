@@ -104,7 +104,7 @@ def check_stop(request: Request, max_model_len: int) -> bool:
     if last_token_id == sampling_params.eos_token_id:
         request.status = RequestStatus.FINISHED_STOPPED
         return True
-
+    print(f"##hm last_token_id is:{last_token_id} sampling_params.stop_token_ids is:{sampling_params.stop_token_ids}")
     if last_token_id in (sampling_params.stop_token_ids or ()):
         request.status = RequestStatus.FINISHED_STOPPED
         request.stop_reason = last_token_id

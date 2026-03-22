@@ -146,9 +146,14 @@ class OpenAIServingChat(OpenAIServing):
             else getattr(mc, "override_generation_config", {}).get("max_new_tokens")
         )
         self.use_harmony = self.model_config.hf_config.model_type == "gpt_oss"
+        #print(f"##hm self.use_harmony  is:{self.use_harmony}")
         if self.use_harmony:
             if "stop_token_ids" not in self.default_sampling_params:
                 self.default_sampling_params["stop_token_ids"] = []
+                #print(f"##hm !! stop_token_ids not in sampling params and force set 3 values")
+                #self.default_sampling_params["stop_token_ids"] = [200002,199999,200012]
+            else:
+                print(f"##hm stop_token_ids  in sampling params")
             self.default_sampling_params["stop_token_ids"].extend(
                 get_stop_tokens_for_assistant_actions()
             )

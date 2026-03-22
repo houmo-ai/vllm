@@ -75,7 +75,7 @@ class UniProcExecutor(Executor):
     ) -> Any:
         if kwargs is None:
             kwargs = {}
-
+        logger.debug(f"##hm self.driver_worker is:{self.driver_worker}")
         if not non_block:
             result = run_method(self.driver_worker, method, args, kwargs)
             return result if single_value else [result]
