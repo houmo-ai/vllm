@@ -146,6 +146,31 @@ class TensorMetadata:
     data_offset: int      # 对应tensor.data_offset
     name: str             # 补充tensor.name，用于文件保存和标识（必要字段）
 
+    def to_dict(self) -> dict:
+        """将 TensorMetadata 转换为字典，确保 JSON 可序列化"""
+        # 将 shape 转换为元组，并确保所有元素都是 Python int 类型
+        shape_list = list(self.shape)
+        converted_shape = []
+        for item in shape_list:
+            if hasattr(item, 'item'):
+                # numpy 标量转换为 Python int
+                converted_shape.append(int(item.item()))
+            elif hasattr(item, 'tolist'):
+                # numpy 数组转换为 Python 列表
+                converted_shape.append(item.tolist())
+            else:
+                converted_shape.append(int(item))
+        return {
+            "shape": tuple(converted_shape),
+            "n_elements": int(self.n_elements),
+            "quantization": str(self.quantization),
+            "data_offset": int(self.data_offset),
+            "name": str(self.name),
+        }
+
+    def __repr__(self) -> str:
+        return f"TensorMetadata(name={self.name!r}, shape={self.shape}, n_elements={self.n_elements}, quantization={self.quantization!r}, data_offset={self.data_offset})"
+
 def get_gguf_metainfo():
    return globa_gguf_metainfo
 
@@ -212,6 +237,11 @@ def parse_gguf(gguf_file_path, additional_config=None):
         for key, field in main_reader.fields.items():
             value = field.parts[field.data[0]]
             print(f"{key:{max_key_length}} : {value}")
+            # 将 numpy.memmap 或 numpy.ndarray 转换为 Python 基本类型，确保 JSON 可序列化
+            if hasattr(value, 'tolist'):
+                value = value.tolist()
+            elif hasattr(value, 'item'):
+                value = value.item()
             local_gguf_metainfo[key] = value
 
         # 读取张量信息（核心修改：存储自定义元数据对象，而非原tensor）
@@ -222,11 +252,21 @@ def parse_gguf(gguf_file_path, additional_config=None):
         print("-" * 80)
         for tensor in main_reader.tensors:
             # 提取核心字段
-            shape = tensor.shape
-            n_elements = tensor.n_elements
-            quantization_str = tensor.tensor_type.name
-            data_offset = tensor.data_offset
-            tensor_name = tensor.name
+            # 将 shape 转换为元组，并确保所有元素都是 Python int 类型
+            shape_list = list(tensor.shape)
+            converted_shape = []
+            for item in shape_list:
+                if hasattr(item, 'item'):
+                    converted_shape.append(int(item.item()))
+                elif hasattr(item, 'tolist'):
+                    converted_shape.append(item.tolist())
+                else:
+                    converted_shape.append(int(item))
+            shape = tuple(converted_shape)
+            n_elements = int(tensor.n_elements)
+            quantization_str = str(tensor.tensor_type.name)
+            data_offset = int(tensor.data_offset)
+            tensor_name = str(tensor.name)
             shape_str = "x".join(map(str, shape))
 
             # 打印信息（逻辑不变）
@@ -268,6 +308,11 @@ def parse_gguf(gguf_file_path, additional_config=None):
                     for key, field in vl_reader.fields.items():
                         value = field.parts[field.data[0]]
                         print(f"{key:{max_key_length}} : {value}")
+                        # 将 numpy.memmap 或 numpy.ndarray 转换为 Python 基本类型，确保 JSON 可序列化
+                        if hasattr(value, 'tolist'):
+                            value = value.tolist()
+                        elif hasattr(value, 'item'):
+                            value = value.item()
                         local_gguf_vl_metainfo[key] = value
 
                     print("----")
@@ -278,11 +323,21 @@ def parse_gguf(gguf_file_path, additional_config=None):
                         if tensor.name.endswith((".json", ".txt", ".jinja", ".md")):
                             continue
                         # 提取核心字段
-                        shape = tensor.shape
-                        n_elements = tensor.n_elements
-                        quantization_str = tensor.tensor_type.name
-                        data_offset = tensor.data_offset
-                        tensor_name = tensor.name
+                        # 将 shape 转换为元组，并确保所有元素都是 Python int 类型
+                        shape_list = list(tensor.shape)
+                        converted_shape = []
+                        for item in shape_list:
+                            if hasattr(item, 'item'):
+                                converted_shape.append(int(item.item()))
+                            elif hasattr(item, 'tolist'):
+                                converted_shape.append(item.tolist())
+                            else:
+                                converted_shape.append(int(item))
+                        shape = tuple(converted_shape)
+                        n_elements = int(tensor.n_elements)
+                        quantization_str = str(tensor.tensor_type.name)
+                        data_offset = int(tensor.data_offset)
+                        tensor_name = str(tensor.name)
                         shape_str = "x".join(map(str, shape))
 
                         # 打印信息（逻辑不变）
@@ -302,8 +357,9 @@ def parse_gguf(gguf_file_path, additional_config=None):
                     sys.exit(-1)
 
         # 5. 保存配置文件张量（核心修改：使用元数据对象的字段）
-        local_gguf_metainfo['configfiles_ingguf_info'] = tensors_info.copy()
-        local_gguf_metainfo['hmm_ingguf_info'] = hmm_tensors_info.copy()
+        # 将 TensorMetadata 对象转换为字典，确保 JSON 可序列化
+        local_gguf_metainfo['configfiles_ingguf_info'] = [meta.to_dict() for meta in tensors_info]
+        local_gguf_metainfo['hmm_ingguf_info'] = [meta.to_dict() for meta in hmm_tensors_info]
 
 
         # 保存文件时，读取元数据对象的字段（替代原tensor）
