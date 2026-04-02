@@ -226,6 +226,7 @@ class OpenAIServingRender:
             tool_dicts = [tool.model_dump() for tool in request.tools]
 
         if not self.use_harmony:
+            #print(f"##hm not use harmoy request.messages is:{request.messages}")
             # Common case.
             error_check_ret = self.validate_chat_template(
                 request_chat_template=request.chat_template,
@@ -246,6 +247,7 @@ class OpenAIServingRender:
             )
         else:
             # For GPT-OSS.
+            #print(f"##hm do use harmoy request.messages is:{request.messages}")
             should_include_tools = tool_dicts is not None
             conversation, engine_prompts = self._make_request_with_harmony(
                 request, should_include_tools
@@ -395,7 +397,8 @@ class OpenAIServingRender:
         # Add developer message.
         if request.tools:
             dev_msg = get_developer_message(
-                tools=request.tools if should_include_tools else None  # type: ignore[arg-type]
+                tools=request.tools if should_include_tools else None,  # type: ignore[arg-type]
+                tool_choice=request.tool_choice,
             )
             messages.append(dev_msg)
 

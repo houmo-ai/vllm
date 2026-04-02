@@ -128,17 +128,33 @@ class CpuGpuBuffer:
                 )
             self.np = self.cpu.numpy()
 
-    def copy_to_gpu(self, n: int | None = None) -> torch.Tensor:
+    def copy_to_gpu_zidai(self, n: int | None = None) -> torch.Tensor:
         if n is None:
             return self.gpu.copy_(self.cpu, non_blocking=True)
         return self.gpu[:n].copy_(self.cpu[:n], non_blocking=True)
 
-    def copy_to_cpu(self, n: int | None = None) -> torch.Tensor:
+    def copy_to_cpu_zidai(self, n: int | None = None) -> torch.Tensor:
         """NOTE: Because this method is non-blocking, explicit synchronization
         is needed to ensure the data is copied to CPU."""
         if n is None:
             return self.cpu.copy_(self.gpu, non_blocking=True)
         return self.cpu[:n].copy_(self.gpu[:n], non_blocking=True)
+
+    def copy_to_gpu(self, n: int | None = None) -> torch.Tensor:
+        # 0 拷贝！直接让 gpu 指向 cpu 的内存
+        if n is None:
+            self.gpu = self.cpu
+        else:
+            self.gpu = self.cpu[:n]
+        return self.gpu
+
+    def copy_to_cpu(self, n: int | None = None) -> torch.Tensor:
+        # 0 拷贝！直接让 cpu 指向 gpu 的内存
+        if n is None:
+            self.cpu = self.gpu
+        else:
+            self.cpu = self.gpu[:n]
+        return self.cpu
 
 
 def get_engine_client_zmq_addr(local_only: bool, host: str, port: int = 0) -> str:

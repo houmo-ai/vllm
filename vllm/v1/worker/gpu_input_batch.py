@@ -362,7 +362,7 @@ class InputBatch:
                 self.temperature_cpu[req_index] = sampling_params.temperature
                 self.random_reqs.add(req_id)
             #self.temperature_cpu[req_index] = 0.0
-            print(f"##hm force set self.temperature_cpu{[req_index]} is:{self.temperature_cpu[req_index]}")
+            #print(f"##hm force set self.temperature_cpu{[req_index]} is:{self.temperature_cpu[req_index]}")
 
             self.top_p_cpu[req_index] = sampling_params.top_p
             if sampling_params.top_p < 1:

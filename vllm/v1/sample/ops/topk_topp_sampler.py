@@ -13,6 +13,23 @@ from vllm.logger import init_logger
 from vllm.platforms import CpuArchEnum, current_platform
 from vllm.triton_utils import HAS_TRITON
 
+import os
+import time
+import numpy as np
+ENABLE_TIMING = os.getenv("ENABLE_TIMING", "False").lower() in ("true", "1", "yes")
+
+def timer_decorator(func):
+    def wrapper(*args, **kwargs):
+        if ENABLE_TIMING:
+            start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        if ENABLE_TIMING:
+            end_time = time.perf_counter()
+            elapsed_time_ms = (end_time - start_time) * 1000
+            print(f"intopp-topk {func.__name__} hmadd costtime: {elapsed_time_ms:.3f} ms")
+        return result
+    return wrapper
+
 if HAS_TRITON:
     from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
 
@@ -89,8 +106,10 @@ class TopKTopPSampler(nn.Module):
                 )
                 self.forward = self.forward_native
         else:
+            print(f"##hm call self.forward_native here")
             self.forward = self.forward_native
 
+    @timer_decorator
     def forward_native(
         self,
         logits: torch.Tensor,
@@ -108,10 +127,26 @@ class TopKTopPSampler(nn.Module):
         if self.logprobs_mode == "processed_logits":
             logits_to_return = logits
         elif self.logprobs_mode == "processed_logprobs":
+            if ENABLE_TIMING:
+                start_time = time.perf_counter()
+
             logits_to_return = logits.log_softmax(dim=-1, dtype=torch.float32)
+
+            if ENABLE_TIMING:
+                end_time = time.perf_counter()
+                elapsed_time_ms = (end_time - start_time) * 1000
+                print(f"##in toppk 1 log_softmax costtime: {elapsed_time_ms:.3f} ms")
+
+        if ENABLE_TIMING:
+            start_time = time.perf_counter()
         probs = logits.softmax(dim=-1, dtype=torch.float32)
+        if ENABLE_TIMING:
+            end_time = time.perf_counter()
+            elapsed_time_ms = (end_time - start_time) * 1000
+            print(f"##in toppk 2 softmax costtime: {elapsed_time_ms:.3f} ms")
         return random_sample(probs, generators), logits_to_return
 
+    @timer_decorator
     def forward_cuda(
         self,
         logits: torch.Tensor,
@@ -139,6 +174,7 @@ class TopKTopPSampler(nn.Module):
         # because of slicing operation in logits_processor.
         return flashinfer_sample(logits.contiguous(), k, p, generators), None
 
+    @timer_decorator
     def forward_cpu(
         self,
         logits: torch.Tensor,
@@ -241,7 +277,7 @@ def compiled_random_sample(logits: torch.Tensor) -> torch.Tensor:
     q.exponential_()
     return probs.div(q).argmax(dim=-1).view(-1)
 
-
+@timer_decorator
 def apply_top_k_top_p(
     logits: torch.Tensor, k: torch.Tensor | None, p: torch.Tensor | None
 ) -> torch.Tensor:
@@ -254,7 +290,91 @@ def apply_top_k_top_p(
     # Use pytorch sort implementation for small batch sizes.
     return apply_top_k_top_p_pytorch(logits, k, p)
 
+@timer_decorator
+def apply_top_k_top_p_fast(
+    logits: np.ndarray,
+    top_k: int,
+    top_p,
+    min_tokens_to_keep: int = 1
+) -> np.ndarray:
+    # 基础参数处理
+    top_p = float(top_p)
+    B, V = logits.shape
 
+    MAX_TOP_K = min(1024, V)  # 词表大也只算1024，足够精准
+    use_top_k = (top_k is not None and top_k > 0)
+    use_top_p = (top_p < 1.0)
+
+    if not use_top_k and not use_top_p:
+        return logits
+
+    # ======================
+    # 1. 一次性取 TOP-K 最大值不排序全词表
+    # ======================
+    inds = np.argpartition(logits, -MAX_TOP_K, axis=-1)[:, -MAX_TOP_K:]
+    vals = np.take_along_axis(logits, inds, axis=-1)
+
+    # 降序排序（只排 TOP-K，极快）
+    vals.sort(axis=-1)
+    vals = vals[:, ::-1]
+
+    # ======================
+    # 2. 计算 TOP-K 阈值（一次完成）
+    # ======================
+    k_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
+    if use_top_k:
+        real_k = min(top_k, MAX_TOP_K)
+        if real_k < MAX_TOP_K:
+            k_thresh = vals[:, [real_k - 1]]
+
+    # ======================
+    # 3. 计算 TOP-P 阈值（一次完成）
+    # ======================
+    p_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
+    if use_top_p:
+        # 备份原始 logits 值（重要！）
+        original_vals = vals.copy()
+
+        # 稳定 softmax：防溢出 + 加速
+        vals -= vals[:, :1]
+        np.exp(vals, out=vals)
+        cum_prob = vals.cumsum(axis=-1)
+        cum_prob /= cum_prob[:, -1:]
+
+        # 向量化计算 cutoff
+        cut_idx = np.count_nonzero(cum_prob < top_p, axis=-1)
+        cut_idx = np.maximum(cut_idx, min_tokens_to_keep)
+        cut_idx = np.minimum(cut_idx, MAX_TOP_K - 1)
+
+        # 从原始 logits 值中取出 top_p 阈值
+        p_thresh = original_vals[np.arange(B), cut_idx].reshape(B, 1)
+
+    # ======================
+    # 4. 合并阈值：取最严格的一个
+    # ======================
+    final_thresh = np.maximum(k_thresh, p_thresh)
+
+    # ======================
+    # 5. 极速过滤：直接赋值 -inf
+    # ======================
+    # 重新获取原始 logits 值（因为 vals 可能被修改了）
+    original_logits_vals = np.take_along_axis(logits, inds, axis=-1)
+    original_logits_vals.sort(axis=-1)
+    original_logits_vals = original_logits_vals[:, ::-1]
+
+    row_idx = np.repeat(np.arange(B), MAX_TOP_K)
+    col_idx = inds.ravel()
+    logits_vals_flat = original_logits_vals.ravel()
+    final_thresh_repeat = np.repeat(final_thresh.ravel(), MAX_TOP_K)
+
+    # 同时满足 top_k + top_p 过滤
+    mask = logits_vals_flat < final_thresh_repeat
+    logits[row_idx[mask], col_idx[mask]] = -np.inf
+
+    return logits
+
+
+@timer_decorator
 def apply_top_k_top_p_pytorch(
     logits: torch.Tensor,
     k: torch.Tensor | None,
@@ -268,35 +388,44 @@ def apply_top_k_top_p_pytorch(
 
     The logits tensor may be updated in-place.
     """
-    if p is None:
-        if k is None:
-            return logits
+    print(f"##hm p:{p} k:{k} allow_cpu_sync:{allow_cpu_sync}")
+    if 1:#hm 优化后的算法
+        if p is None and k is None:
+                return logits
+        np_arr = logits.numpy()
+        np_arr = apply_top_k_top_p_fast(np_arr,k,p)
+        logits=torch.from_numpy(np_arr)
+        return logits
+    else: #hm vllm自带-太慢了
+        if p is None:
+            if k is None:
+                return logits
 
-        if allow_cpu_sync:
-            # Avoid sorting vocab for top-k only case.
-            return apply_top_k_only(logits, k)
+            if allow_cpu_sync:
+                # Avoid sorting vocab for top-k only case.
+                return apply_top_k_only(logits, k)
 
-    logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
+        logits_sort, logits_idx = logits.sort(dim=-1, descending=False)
 
-    if k is not None:
-        # Apply top-k.
-        top_k_mask = logits_sort.size(1) - k.to(torch.long)  # shape: B
-        # Get all the top_k values.
-        top_k_mask = logits_sort.gather(1, top_k_mask.unsqueeze(dim=1))
-        top_k_mask = logits_sort < top_k_mask
-        logits_sort.masked_fill_(top_k_mask, -float("inf"))
+        if k is not None:
+            # Apply top-k.
+            top_k_mask = logits_sort.size(1) - k.to(torch.long)  # shape: B
+            # Get all the top_k values.
+            top_k_mask = logits_sort.gather(1, top_k_mask.unsqueeze(dim=1))
+            top_k_mask = logits_sort < top_k_mask
+            logits_sort.masked_fill_(top_k_mask, -float("inf"))
 
-    if p is not None:
-        # Apply top-p.
-        probs_sort = logits_sort.softmax(dim=-1)
-        probs_sum = torch.cumsum(probs_sort, dim=-1, out=probs_sort)
-        top_p_mask = probs_sum <= 1 - p.unsqueeze(dim=1)
-        # at least one
-        top_p_mask[:, -1] = False
-        logits_sort.masked_fill_(top_p_mask, -float("inf"))
+        if p is not None:
+            # Apply top-p.
+            probs_sort = logits_sort.softmax(dim=-1)
+            probs_sum = torch.cumsum(probs_sort, dim=-1, out=probs_sort)
+            top_p_mask = probs_sum <= 1 - p.unsqueeze(dim=1)
+            # at least one
+            top_p_mask[:, -1] = False
+            logits_sort.masked_fill_(top_p_mask, -float("inf"))
 
-    # Re-sort the probabilities.
-    return logits.scatter_(dim=-1, index=logits_idx, src=logits_sort)
+        # Re-sort the probabilities.
+        return logits.scatter_(dim=-1, index=logits_idx, src=logits_sort)
 
 
 def apply_top_k_only(logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
@@ -321,8 +450,8 @@ def apply_top_k_only(logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
     top_k_mask.masked_fill_(no_top_k_mask.unsqueeze(1), -float("inf"))
     return logits.masked_fill_(logits < top_k_mask, -float("inf"))
 
-
-def random_sample(
+@timer_decorator
+def random_sample_zidai_slow(
     probs: torch.Tensor,
     generators: dict[int, torch.Generator],
 ) -> torch.Tensor:
@@ -344,6 +473,41 @@ def random_sample(
         for i, generator in generators.items():
             q[i].exponential_(generator=generator)
     return probs.div_(q).argmax(dim=-1).view(-1)
+
+@timer_decorator
+def random_sample(
+    probs: torch.Tensor,
+    generators: dict[int, torch.Generator],
+) -> torch.Tensor:
+    """Randomly sample from the probabilities.
+
+    We use this function instead of torch.multinomial because torch.multinomial
+    causes CPU-GPU synchronization.
+
+    Optimized implementation using Gumbel-Max sampling:
+    argmax_j(log(p_j) + G_j) where G_j ~ Gumbel(0, 1)
+    Gumbel(0, 1) = -log(-log(U)) where U ~ Uniform(0, 1)
+    """
+    batch_size = probs.shape[0]
+
+    gumbel = torch.empty_like(probs)
+    has_global_seed = len(generators) != batch_size
+
+    if has_global_seed:
+        gumbel.uniform_(1e-10, 1.0 - 1e-10)
+        gumbel.log_().neg_().log_().neg_()
+
+        if generators:
+            for i, generator in generators.items():
+                gumbel[i].uniform_(1e-10, 1.0 - 1e-10, generator=generator)
+                gumbel[i].log_().neg_().log_().neg_()
+    else:
+        for i, generator in generators.items():
+            gumbel[i].uniform_(1e-10, 1.0 - 1e-10, generator=generator)
+        gumbel.log_().neg_().log_().neg_()
+
+    probs.log_().add_(gumbel)
+    return probs.argmax(dim=-1).view(-1)
 
 
 def flashinfer_sample(

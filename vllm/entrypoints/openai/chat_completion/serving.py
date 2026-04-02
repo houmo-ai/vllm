@@ -264,7 +264,7 @@ class OpenAIServingChat(OpenAIServing):
             sub_request_id = (
                 request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
             )
-
+            #print(f"##hm engine_prompts is:{engine_prompts}")
             max_tokens = get_max_tokens(
                 max_model_len,
                 request.max_completion_tokens
@@ -1446,17 +1446,20 @@ class OpenAIServingChat(OpenAIServing):
             elif request.tool_choice and request.tool_choice == "required":
                 tool_call_class_items = []
                 tool_calls = tool_calls or []
+                if len(tool_calls) == 0 and request.tools:
+                    first_tool = request.tools[0]
+                    if first_tool.type == "function":
+                        forced_function_call = FunctionCall(
+                            name=first_tool.function.name,
+                            arguments="{}",
+                        )
+                        tool_calls.append(forced_function_call)
                 for idx, tool_call in enumerate(tool_calls):
-                    # Use native ID if available,
-                    # otherwise generate ID with correct id_type
                     if tool_call.id:
                         tool_call_class_items.append(
                             tool_call_class(id=tool_call.id, function=tool_call)
                         )
                     else:
-                        # Generate ID using the correct format (kimi_k2 or random),
-                        # but leave it to the class if it's Mistral to preserve
-                        # 9-char IDs
                         if isinstance(tokenizer, MistralTokenizer):
                             tool_call_class_items.append(
                                 tool_call_class(function=tool_call)

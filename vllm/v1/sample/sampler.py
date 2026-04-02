@@ -16,6 +16,22 @@ from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
 
 _SAMPLING_EPS = 1e-5
 
+import os
+import time
+ENABLE_TIMING = os.getenv("ENABLE_TIMING", "False").lower() in ("true", "1", "yes")
+
+def timer_decorator(func):
+    def wrapper(*args, **kwargs):
+        if ENABLE_TIMING:
+            start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        if ENABLE_TIMING:
+            end_time = time.perf_counter()
+            elapsed_time_ms = (end_time - start_time) * 1000
+            print(f"{func.__name__} hmadd costtime: {elapsed_time_ms:.3f} ms")
+        return result
+    return wrapper
+
 
 class Sampler(nn.Module):
     """
@@ -64,6 +80,7 @@ class Sampler(nn.Module):
         self.pin_memory = is_pin_memory_available()
         self.logprobs_mode = logprobs_mode
 
+    @timer_decorator
     def forward(
         self,
         logits: torch.Tensor,
@@ -129,6 +146,7 @@ class Sampler(nn.Module):
         return sampler_output
 
     @staticmethod
+    @timer_decorator
     def apply_temperature(
         logits: torch.Tensor,
         temp: torch.Tensor,
@@ -141,9 +159,11 @@ class Sampler(nn.Module):
         return logits.div_(temp.unsqueeze(dim=1))
 
     @staticmethod
+    @timer_decorator
     def greedy_sample(logits: torch.Tensor) -> torch.Tensor:
         return logits.argmax(dim=-1).view(-1)
 
+    @timer_decorator
     def sample(
         self,
         logits: torch.Tensor,
@@ -203,10 +223,12 @@ class Sampler(nn.Module):
         return sampled, processed_logprobs
 
     @staticmethod
+    @timer_decorator
     def compute_logprobs(logits: torch.Tensor) -> torch.Tensor:
         return logits.log_softmax(dim=-1, dtype=torch.float32)
 
     @staticmethod
+    @timer_decorator
     def gather_logprobs(
         logprobs: torch.Tensor,
         num_logprobs: int,
@@ -263,6 +285,7 @@ class Sampler(nn.Module):
             for out, spec in zip(output_token_ids, spec_token_ids)
         ]
 
+    @timer_decorator
     def apply_logits_processors(
         self,
         logits: torch.Tensor,
@@ -300,6 +323,7 @@ class Sampler(nn.Module):
         return logits
 
     @staticmethod
+    @timer_decorator
     def apply_penalties(
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,

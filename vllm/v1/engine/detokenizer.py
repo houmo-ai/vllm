@@ -176,6 +176,10 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
 
         self.tokenizer: Tokenizer = tokenizer._tokenizer
 
+        #self.skip_special_tokens=False
+        #sampling_params.skip_special_tokens=False
+        #print(f"##hm skip special tokens set to false")
+
         # Use native prefill to prime the decode stream with prompt tokens.
         self.stream = DecodeStream(
             ids=request.prompt_token_ids,

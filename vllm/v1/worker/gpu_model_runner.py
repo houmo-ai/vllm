@@ -214,6 +214,20 @@ AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 # list when ubatching is enabled
 PerLayerAttnMetadata: TypeAlias = list[AttnMetadataDict] | AttnMetadataDict
 
+import os
+ENABLE_TIMING = os.getenv("ENABLE_TIMING", "False").lower() in ("true", "1", "yes")
+
+def timer_decorator(func):
+    def wrapper(*args, **kwargs):
+        if ENABLE_TIMING:
+            start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        if ENABLE_TIMING:
+            end_time = time.perf_counter()
+            elapsed_time_ms = (end_time - start_time) * 1000
+            print(f"{func.__name__} hmadd costtime: {elapsed_time_ms:.3f} ms")
+        return result
+    return wrapper
 
 # Wrapper for ModelRunnerOutput to support overlapped execution.
 class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
@@ -3096,6 +3110,7 @@ class GPUModelRunner(
             ec_connector_output,
         )
 
+    @timer_decorator
     def _sample(
         self,
         logits: torch.Tensor | None,
@@ -3103,8 +3118,11 @@ class GPUModelRunner(
     ) -> SamplerOutput:
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
-        sampling_metadata.all_greedy=True
-        sampling_metadata.all_random=False
+        #sampling_metadata.all_greedy=True
+        #sampling_metadata.all_random=False
+        #sampling_metadata.temperature=0.0
+        #sampling_metadata.no_penalties=False
+        #print(f"##hm sampling_metadata.all_greedy is:{sampling_metadata.all_greedy}  sampling_metadata.no_penalties:{sampling_metadata.no_penalties} sampling_metadata.temperature is:{sampling_metadata.temperature}")
         #logger.error(f"##hm force set sampling_metadata.all_greedy to True")
         # Update output token ids with tokens sampled in last step
         # if async scheduling and required by current sampling params.
@@ -3885,6 +3903,7 @@ class GPUModelRunner(
         self.kv_connector_output = kv_connector_output
         return None
 
+    #@timer_decorator
     @torch.inference_mode
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
