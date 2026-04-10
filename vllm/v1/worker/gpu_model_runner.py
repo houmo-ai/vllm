@@ -3231,7 +3231,8 @@ class GPUModelRunner(
         # the sampled tokens back, because there's no direct communication
         # between the first-stage worker and the last-stage worker.
         req_ids = self.input_batch.req_ids
-        for req_idx in range(num_sampled_tokens):
+        num_reqs_in_batch = len(req_ids)
+        for req_idx in range(min(num_sampled_tokens, num_reqs_in_batch)):
             if self.use_async_scheduling:
                 sampled_ids = [-1] if req_idx not in invalid_req_indices_set else None
             else:

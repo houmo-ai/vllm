@@ -115,7 +115,7 @@ def vllm_qwen_ocr_cn(img_path):
     else:
         image_data, _ = process_vision_info(messages)
     #image_data[0]=resize_with_pad(image_data[0],model_w,model_h)
-    print(f"##hm IN LLM_qwen25_vl_example.py image_data from process_vision_info is:{image_data}")
+    print(f"##hm IN LLM_qwen3_vl_example.py image_data from process_vision_info is:{image_data}")
     sampling_params = SamplingParams(temperature=0.0,
                                 max_tokens=4096,
                                 stop_token_ids=stop_token_ids)
