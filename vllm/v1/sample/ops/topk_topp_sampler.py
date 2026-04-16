@@ -290,8 +290,97 @@ def apply_top_k_top_p(
     # Use pytorch sort implementation for small batch sizes.
     return apply_top_k_top_p_pytorch(logits, k, p)
 
+
 @timer_decorator
 def apply_top_k_top_p_fast(
+    logits: np.ndarray,
+    top_k,
+    top_p,
+    min_tokens_to_keep: int = 1
+) -> np.ndarray:
+    # ======================
+    # 兼容 PyTorch Tensor 批量输入
+    # ======================
+    if isinstance(top_p, torch.Tensor):
+        top_p = top_p.detach().cpu().numpy()
+    if isinstance(top_k, torch.Tensor):
+        top_k = top_k.detach().cpu().numpy()
+
+    B, V = logits.shape
+    MAX_TOP_K = min(1024, V)
+    use_top_k = (top_k is not None) and np.any(np.asarray(top_k) > 0)
+    use_top_p = np.any(np.asarray(top_p) < 1.0)
+
+    if not use_top_k and not use_top_p:
+        return logits
+
+    # ======================
+    # 1. 快速取 TOP-K 不排序全词表
+    # ======================
+    inds = np.argpartition(logits, -MAX_TOP_K, axis=-1)[:, -MAX_TOP_K:]
+    vals = np.take_along_axis(logits, inds, axis=-1)
+
+    # 降序排序
+    vals.sort(axis=-1)
+    vals = vals[:, ::-1]
+
+    # ======================
+    # 2. 计算 TOP-K 阈值（支持批量）
+    # ======================
+    k_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
+    if use_top_k:
+        if np.isscalar(top_k):
+            real_k = min(top_k, MAX_TOP_K)
+            if real_k < MAX_TOP_K:
+                k_thresh = vals[:, [real_k - 1]]
+        else:
+            for i in range(B):
+                tk = min(int(top_k[i]), MAX_TOP_K)
+                if tk < MAX_TOP_K:
+                    k_thresh[i, 0] = vals[i, tk - 1]
+
+    # ======================
+    # 3. 计算 TOP-P 阈值（支持批量）
+    # ======================
+    p_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
+    if use_top_p:
+        original_vals = vals.copy()
+        vals -= vals[:, :1]
+        np.exp(vals, out=vals)
+        cum_prob = vals.cumsum(axis=-1)
+        cum_prob /= cum_prob[:, -1:]
+
+        for i in range(B):
+            tp = float(top_p[i] if not np.isscalar(top_p) else top_p)
+            cut_idx = np.count_nonzero(cum_prob[i] < tp)
+            cut_idx = max(cut_idx, min_tokens_to_keep)
+            cut_idx = min(cut_idx, MAX_TOP_K - 1)
+            p_thresh[i, 0] = original_vals[i, cut_idx]
+
+    # ======================
+    # 4. 合并阈值
+    # ======================
+    final_thresh = np.maximum(k_thresh, p_thresh)
+
+    # ======================
+    # 5. 过滤 logits
+    # ======================
+    original_logits_vals = np.take_along_axis(logits, inds, axis=-1)
+    original_logits_vals.sort(axis=-1)
+    original_logits_vals = original_logits_vals[:, ::-1]
+
+    row_idx = np.repeat(np.arange(B), MAX_TOP_K)
+    col_idx = inds.ravel()
+    logits_vals_flat = original_logits_vals.ravel()
+    final_thresh_repeat = np.repeat(final_thresh.ravel(), MAX_TOP_K)
+
+    mask = logits_vals_flat < final_thresh_repeat
+    logits[row_idx[mask], col_idx[mask]] = -np.inf
+
+    return logits
+
+@timer_decorator
+def apply_top_k_top_p_fast_only_1token_logits(
     logits: np.ndarray,
     top_k: int,
     top_p,

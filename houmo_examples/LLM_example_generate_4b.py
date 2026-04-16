@@ -73,121 +73,6 @@ def gguf_to_config(gguf_path, output_config_path,custom_tokenizer):
     print(f"Qwen3 config.json已生成：{output_config_path}")
 
 
-def gguf_to_config_error2(gguf_path, output_config_path):
-    # 读取GGUF文件
-    with open(gguf_path, "rb") as f:
-        reader = GGUFReader(f)
-
-    # 【关键修改】获取元数据（适配新版API）
-    # 方法1：通过get_metadata()获取所有元数据（返回字典）
-    metadata = reader.get_metadata()  # 适用于gguf-py 0.6.0+
-
-    # 方法2：若get_metadata()不存在，可遍历metadata_items（返回键值对迭代器）
-    # metadata = {k: v for k, v in reader.metadata_items}
-
-    # 映射为Hugging Face config字段（以LLaMA为例，其他模型需调整）
-    config = {
-        "model_type": metadata.get("general.architecture", "llama"),
-        "architectures": [f"{metadata.get('general.architecture', 'llama').capitalize()}ForCausalLM"],
-        "hidden_size": metadata.get("llama.embedding_length"),
-        "num_hidden_layers": metadata.get("llama.block_count"),
-        "num_attention_heads": metadata.get("llama.attention_head_count"),
-        # 处理num_key_value_heads（部分模型可能没有，默认与attention_head_count一致）
-        "num_key_value_heads": metadata.get("llama.attention_head_count_kv",
-                                           metadata.get("llama.attention_head_count")),
-        "max_position_embeddings": metadata.get("llama.context_length"),
-        "rms_norm_eps": metadata.get("llama.attention.layer_norm_rms_epsilon", 1e-6),
-        "rope_theta": metadata.get("llama.rope.freq_base", 10000.0),
-        "vocab_size": metadata.get("tokenizer.ggml.vocab_size"),
-        "tie_word_embeddings": False
-    }
-
-    # 保存为config.json
-    with open(output_config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    print(f"config.json已生成：{output_config_path}")
-
-
-def gguf_to_config_error3(gguf_path, output_config_path):
-    # 读取GGUF文件
-    with open(gguf_path, "rb") as f:
-        reader = GGUFReader(f)
-
-    # 【关键修改】适配0.17.0版本：通过items()迭代获取元数据
-    metadata = {}
-    for key, value in reader.items():  # 遍历所有元数据项
-        metadata[key] = value
-
-    # 映射为Hugging Face config字段（以LLaMA为例）
-    config = {
-        "model_type": metadata.get("general.architecture", "llama"),
-        "architectures": [f"{metadata.get('general.architecture', 'llama').capitalize()}ForCausalLM"],
-        "hidden_size": metadata.get("llama.embedding_length"),
-        "num_hidden_layers": metadata.get("llama.block_count"),
-        "num_attention_heads": metadata.get("llama.attention_head_count"),
-        "num_key_value_heads": metadata.get("llama.attention_head_count_kv",
-                                           metadata.get("llama.attention_head_count")),
-        "max_position_embeddings": metadata.get("llama.context_length"),
-        "rms_norm_eps": metadata.get("llama.attention.layer_norm_rms_epsilon", 1e-6),
-        "rope_theta": metadata.get("llama.rope.freq_base", 10000.0),
-        "vocab_size": metadata.get("tokenizer.ggml.vocab_size"),
-        "tie_word_embeddings": False
-    }
-
-    # 保存为config.json
-    with open(output_config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    print(f"config.json已生成：{output_config_path}")
-
-def gguf_to_config_error4(gguf_path, output_config_path):
-        # 读取GGUF文件并提取元数据（基于reader.fields逻辑）
-    with open(gguf_path, "rb") as f:
-        reader = GGUFReader(f)
-        # 构建元数据字典：从reader.fields中提取键和值
-        metadata = {}
-        for key, field in reader.fields.items():
-            # 从field中获取值（参考你提供的示例逻辑：field.parts[field.data[0]]）
-            value = field.parts[field.data[0]]
-            metadata[key] = value
-    logger.info(f"metadata is:{metadata}")
-    # 映射GGUF元数据到Qwen3的config参数
-    config = {
-        "architectures": ["Qwen3ForCausalLM"],
-        "model_type": "qwen3",
-        "attention_bias": metadata.get("qwen3.attention_bias", False),
-        "attention_dropout": metadata.get("qwen3.attention_dropout", 0.0),
-        "bos_token_id": metadata.get("tokenizer.bos_token_id"),
-        "eos_token_id": metadata.get("tokenizer.eos_token_id"),
-        "head_dim": metadata.get("qwen3.head_dim"),
-        "hidden_act": metadata.get("qwen3.activation_function", "silu"),
-        "hidden_size": metadata.get("qwen3.embedding_length"),
-        "initializer_range": metadata.get("qwen3.initializer_range", 0.02),
-        "intermediate_size": metadata.get("qwen3.feed_forward_length"),
-        "max_position_embeddings": metadata.get("qwen3.context_length"),
-        "max_window_layers": metadata.get("qwen3.max_window_layers", 36),
-        "num_attention_heads": metadata.get("qwen3.attention_head_count"),
-        "num_hidden_layers": metadata.get("qwen3.block_count"),
-        "num_key_value_heads": metadata.get("qwen3.attention_head_count_kv"),
-        "rms_norm_eps": metadata.get("qwen3.rms_norm_eps", 1e-06),
-        "rope_scaling": metadata.get("qwen3.rope.scaling", None),
-        "rope_theta": metadata.get("qwen3.rope.freq_base", 1000000),
-        "sliding_window": metadata.get("qwen3.sliding_window", None),
-        "tie_word_embeddings": metadata.get("qwen3.tie_word_embeddings", False),
-        "torch_dtype": metadata.get("qwen3.torch_dtype", "bfloat16"),
-        "transformers_version": metadata.get("qwen3.transformers_version", "4.51.0"),
-        "use_cache": metadata.get("qwen3.use_cache", True),
-        "use_sliding_window": metadata.get("qwen3.use_sliding_window", False),
-        "vocab_size": metadata.get("tokenizer.ggml.vocab_size")
-    }
-
-    logger.info(f"##hm config is:{config}")
-
-    # 保存为config.json
-    with open(output_config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    print(f"Qwen3 config.json已生成：{output_config_path}")
-
-
 
 def get_files_by_suffix(folder_path, suffix):
     """
@@ -322,7 +207,7 @@ def main():
       #logprobs=5,
       #top_p=0.001,
       seed=42,
-      max_tokens=4096
+      max_tokens=2096
   )
 
   # 示例输入
@@ -332,16 +217,19 @@ def main():
 
       #"/no_think 用C++写个冒泡排序",
       "北京市是",
-    #下面9个问题用于chat 多batch测试
-    "用C++写个冒泡排序,尽量控制200个字左右",
-       "介绍一下大语言模型Qwen的特点以及它是哪个公司的产品,尽量控制200个字左右",
-       "介绍一下孙中山的生平,尽量控制200个字左右",
-       "讲讲三国演义这部小说,尽量控制200个字左右",
-    #   "介绍一下老舍,尽量控制200个字左右",
-    #   "介绍一下秦始皇,尽量控制200个字左右",
-    #   "介绍一下长城,尽量控制200个字左右",
-    #   "介绍一下白宫,尽量控制200个字左右",
-    #   "介绍一下故宫,尽量控制200个字左右",
+
+       #下面9个问题用于chat 多batch测试
+       #"用C++写个冒泡排序,尽量控制200个字左右",
+       #"介绍一下大语言模型Qwen的特点以及它是哪个公司的产品,尽量控制200个字左右",
+       #"介绍一下孙中山的生平,尽量控制200个字左右",
+
+       #"讲讲三国演义这部小说,尽量控制200个字左右",
+       #"介绍一下老舍,尽量控制200个字左右",
+
+       #"介绍一下秦始皇,尽量控制200个字左右",
+       #"介绍一下长城,尽量控制200个字左右",
+       #"介绍一下白宫,尽量控制200个字左右",
+       #"介绍一下故宫,尽量控制200个字左右",
   ]
 
   # 初始化循环计数器和总时间

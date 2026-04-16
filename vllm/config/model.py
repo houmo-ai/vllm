@@ -267,7 +267,12 @@ class ModelConfig:
     path, the generation config will be loaded from the specified folder path.
     If `max_new_tokens` is specified in generation config, then it sets a
     server-wide limit on the number of output tokens for all requests."""
-    override_generation_config: dict[str, Any] = field(default_factory=dict)
+    override_generation_config: dict[str, Any] = field(
+        default_factory=lambda: {
+            "repetition_penalty": 1.1,
+            "temperature": 0.0,
+        }
+    )
     """Overrides or sets generation config. e.g. `{"temperature": 0.5}`. If
     used with `--generation-config auto`, the override parameters will be
     merged with the default config from the model. If used with

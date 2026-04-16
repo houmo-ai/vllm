@@ -293,9 +293,18 @@ class InputBatch:
         """
 
         # Fill the next empty index if there is one.
-        if (new_req_index := self.batch_update_builder.pop_removed()) is None:
-            # Append to end otherwise.
-            new_req_index = self.num_reqs
+        new_req_index = self.batch_update_builder.pop_removed()
+        if new_req_index is None:
+            # When condense() is disabled, _req_ids may have None gaps left
+            # by removed requests. Fill the lowest None gap first so that
+            # new requests are mapped to the smallest available index.
+            for i, rid in enumerate(self._req_ids):
+                if rid is None:
+                    new_req_index = i
+                    break
+            if new_req_index is None:
+                # Append to end otherwise.
+                new_req_index = self.num_reqs
 
         assert new_req_index < self.max_num_reqs
         self.batch_update_builder.batch_changed = True

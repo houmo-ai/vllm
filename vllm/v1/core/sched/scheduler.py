@@ -1380,6 +1380,17 @@ class Scheduler(SchedulerInterface):
                 # Pooling stops as soon as there is output.
                 request.status = RequestStatus.FINISHED_STOPPED
                 stopped = True
+            else:
+                # No new tokens generated for this request. Check if this
+                # request was skipped by the model runner (prefill_only_step).
+                # When num_nans_in_logits[req_id] == -1, it means the request
+                # was not actually processed, so roll back num_computed_tokens.
+                if (num_nans_in_logits is not None
+                        and req_id in num_nans_in_logits
+                        and num_nans_in_logits[req_id] == -1):
+                    num_scheduled = num_scheduled_tokens.get(req_id, 0)
+                    if num_scheduled > 0:
+                        request.num_computed_tokens -= num_scheduled
 
             routed_experts = None
             finish_reason = None

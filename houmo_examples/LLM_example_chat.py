@@ -80,7 +80,10 @@ def main(args: dict):
 
             #v1.0.0的模型
             #qwen3 8b 32K
-            model_name="/home/user/szj_project/models/v1.0.0/HiModel_xh2_qwen3_8b_256_32k_b1_1chip_2cores_v1.0.0_20260205/"
+            #model_name="/home/user/szj_project/models/v1.0.0/HiModel_xh2_qwen3_8b_256_32k_b1_1chip_2cores_v1.0.0_20260205/"
+
+            #qwen3 8b 16k b4
+            model_name="/home/user/szj_project/models/v1.2.0/qwen3_8b_16k_4batch/"
 
   print(f"load model{model_name}: on houmo npu")
   # 创建LLM实例，根据你的硬件配置调整参数
@@ -144,7 +147,7 @@ def main(args: dict):
       {
           "role": "user",
           #"content": "Write an essay about the importance of higher education.",
-          "content": "介绍一下教育的重要性.",
+          "content": "介绍一下大语言模型Qwen的特点以及它是哪个公司的产品,尽量控制200个字左右",
 
       },
   ]
