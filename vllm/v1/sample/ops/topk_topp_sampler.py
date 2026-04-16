@@ -320,31 +320,36 @@ def apply_top_k_top_p_fast(
     inds = np.argpartition(logits, -MAX_TOP_K, axis=-1)[:, -MAX_TOP_K:]
     vals = np.take_along_axis(logits, inds, axis=-1)
 
-    # 降序排序
-    vals.sort(axis=-1)
-    vals = vals[:, ::-1]
+    # 降序排序 — 同时排序 vals 和 inds 以保持对应关系
+    sort_order = np.argsort(-vals, axis=-1)
+    vals = np.take_along_axis(vals, sort_order, axis=-1)
+    inds = np.take_along_axis(inds, sort_order, axis=-1)
 
     # ======================
-    # 2. 计算 TOP-K 阈值（支持批量）
+    # 2. 保存原始 vals（步骤3的 softmax 会修改 vals，之后比较阈值需要原始值）
+    # ======================
+    original_vals = vals.copy()
+
+    # ======================
+    # 3. 计算 TOP-K 阈值（支持批量）
     # ======================
     k_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
     if use_top_k:
         if np.isscalar(top_k):
             real_k = min(top_k, MAX_TOP_K)
             if real_k < MAX_TOP_K:
-                k_thresh = vals[:, [real_k - 1]]
+                k_thresh = original_vals[:, [real_k - 1]]
         else:
             for i in range(B):
                 tk = min(int(top_k[i]), MAX_TOP_K)
                 if tk < MAX_TOP_K:
-                    k_thresh[i, 0] = vals[i, tk - 1]
+                    k_thresh[i, 0] = original_vals[i, tk - 1]
 
     # ======================
-    # 3. 计算 TOP-P 阈值（支持批量）
+    # 4. 计算 TOP-P 阈值（支持批量）
     # ======================
     p_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
     if use_top_p:
-        original_vals = vals.copy()
         vals -= vals[:, :1]
         np.exp(vals, out=vals)
         cum_prob = vals.cumsum(axis=-1)
@@ -358,23 +363,19 @@ def apply_top_k_top_p_fast(
             p_thresh[i, 0] = original_vals[i, cut_idx]
 
     # ======================
-    # 4. 合并阈值
+    # 5. 合并阈值
     # ======================
     final_thresh = np.maximum(k_thresh, p_thresh)
 
     # ======================
-    # 5. 过滤 logits
+    # 6. 过滤 logits（使用 original_vals 与阈值比较，因为 final_thresh 在原始值域）
     # ======================
-    original_logits_vals = np.take_along_axis(logits, inds, axis=-1)
-    original_logits_vals.sort(axis=-1)
-    original_logits_vals = original_logits_vals[:, ::-1]
-
     row_idx = np.repeat(np.arange(B), MAX_TOP_K)
     col_idx = inds.ravel()
-    logits_vals_flat = original_logits_vals.ravel()
+    original_vals_flat = original_vals.ravel()
     final_thresh_repeat = np.repeat(final_thresh.ravel(), MAX_TOP_K)
 
-    mask = logits_vals_flat < final_thresh_repeat
+    mask = original_vals_flat < final_thresh_repeat
     logits[row_idx[mask], col_idx[mask]] = -np.inf
 
     return logits
@@ -403,27 +404,30 @@ def apply_top_k_top_p_fast_only_1token_logits(
     inds = np.argpartition(logits, -MAX_TOP_K, axis=-1)[:, -MAX_TOP_K:]
     vals = np.take_along_axis(logits, inds, axis=-1)
 
-    # 降序排序（只排 TOP-K，极快）
-    vals.sort(axis=-1)
-    vals = vals[:, ::-1]
+    # 降序排序 — 同时排序 vals 和 inds 以保持对应关系
+    sort_order = np.argsort(-vals, axis=-1)
+    vals = np.take_along_axis(vals, sort_order, axis=-1)
+    inds = np.take_along_axis(inds, sort_order, axis=-1)
 
     # ======================
-    # 2. 计算 TOP-K 阈值（一次完成）
+    # 2. 保存原始 vals（步骤3的 softmax 会修改 vals，之后比较阈值需要原始值）
+    # ======================
+    original_vals = vals.copy()
+
+    # ======================
+    # 3. 计算 TOP-K 阈值（一次完成）
     # ======================
     k_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
     if use_top_k:
         real_k = min(top_k, MAX_TOP_K)
         if real_k < MAX_TOP_K:
-            k_thresh = vals[:, [real_k - 1]]
+            k_thresh = original_vals[:, [real_k - 1]]
 
     # ======================
-    # 3. 计算 TOP-P 阈值（一次完成）
+    # 4. 计算 TOP-P 阈值（一次完成）
     # ======================
     p_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
     if use_top_p:
-        # 备份原始 logits 值（重要！）
-        original_vals = vals.copy()
-
         # 稳定 softmax：防溢出 + 加速
         vals -= vals[:, :1]
         np.exp(vals, out=vals)
@@ -439,25 +443,20 @@ def apply_top_k_top_p_fast_only_1token_logits(
         p_thresh = original_vals[np.arange(B), cut_idx].reshape(B, 1)
 
     # ======================
-    # 4. 合并阈值：取最严格的一个
+    # 5. 合并阈值：取最严格的一个
     # ======================
     final_thresh = np.maximum(k_thresh, p_thresh)
 
     # ======================
-    # 5. 极速过滤：直接赋值 -inf
+    # 6. 极速过滤：直接赋值 -inf（使用 original_vals 与阈值比较）
     # ======================
-    # 重新获取原始 logits 值（因为 vals 可能被修改了）
-    original_logits_vals = np.take_along_axis(logits, inds, axis=-1)
-    original_logits_vals.sort(axis=-1)
-    original_logits_vals = original_logits_vals[:, ::-1]
-
     row_idx = np.repeat(np.arange(B), MAX_TOP_K)
     col_idx = inds.ravel()
-    logits_vals_flat = original_logits_vals.ravel()
+    original_vals_flat = original_vals.ravel()
     final_thresh_repeat = np.repeat(final_thresh.ravel(), MAX_TOP_K)
 
     # 同时满足 top_k + top_p 过滤
-    mask = logits_vals_flat < final_thresh_repeat
+    mask = original_vals_flat < final_thresh_repeat
     logits[row_idx[mask], col_idx[mask]] = -np.inf
 
     return logits
@@ -477,7 +476,7 @@ def apply_top_k_top_p_pytorch(
 
     The logits tensor may be updated in-place.
     """
-    print(f"##hm p:{p} k:{k} allow_cpu_sync:{allow_cpu_sync}")
+    #print(f"##hm p:{p} k:{k} allow_cpu_sync:{allow_cpu_sync}")
     if 1:#hm 优化后的算法
         if p is None and k is None:
                 return logits

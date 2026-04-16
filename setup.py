@@ -810,7 +810,16 @@ def get_vllm_version() -> str:
         os.environ["SETUPTOOLS_SCM_PRETEND_VERSION"] = env_version
         return get_version(write_to="vllm/_version.py")
 
-    version = get_version(write_to="vllm/_version.py")
+    try:
+        version = get_version(write_to="vllm/_version.py")
+    except LookupError:
+        # setuptools_scm failed (e.g. no .git directory).
+        # Fall back to a default version or VLLM_FALLBACK_VERSION env var.
+        fallback = os.getenv("VLLM_FALLBACK_VERSION", "0.18.1rc1")
+        print(f"Warning: setuptools_scm failed to detect version, "
+              f"using fallback version: {fallback}")
+        os.environ["SETUPTOOLS_SCM_PRETEND_VERSION"] = fallback
+        version = get_version(write_to="vllm/_version.py")
     sep = "+" if "+" not in version else "."  # dev versions might contain +
 
     if _no_device():
