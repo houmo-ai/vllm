@@ -309,7 +309,7 @@ def apply_top_k_top_p_fast(
     B, V = logits.shape
     MAX_TOP_K = min(1024, V)
     use_top_k = (top_k is not None) and np.any(np.asarray(top_k) > 0)
-    use_top_p = np.any(np.asarray(top_p) < 1.0)
+    use_top_p = (top_p is not None) and np.any(np.asarray(top_p) < 1.0)
 
     if not use_top_k and not use_top_p:
         return logits

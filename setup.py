@@ -812,7 +812,7 @@ def get_vllm_version() -> str:
 
     try:
         version = get_version(write_to="vllm/_version.py")
-    except LookupError:
+    except Exception:
         # setuptools_scm failed (e.g. no .git directory).
         # Fall back to a default version or VLLM_FALLBACK_VERSION env var.
         fallback = os.getenv("VLLM_FALLBACK_VERSION", "0.18.1rc1")

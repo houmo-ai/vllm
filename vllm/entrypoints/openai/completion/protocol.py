@@ -54,7 +54,7 @@ class CompletionRequest(OpenAIBaseModel):
     frequency_penalty: float | None = 0.0
     logit_bias: dict[str, float] | None = None
     logprobs: int | None = None
-    max_tokens: int | None = 16
+    max_tokens: int | None = None
     n: int = 1
     presence_penalty: float | None = 0.0
     seed: int | None = Field(None, ge=_INT64_MIN, le=_INT64_MAX)
