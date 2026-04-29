@@ -333,11 +333,43 @@ class Sampler(nn.Module):
             return logits
 
         assert sampling_metadata.prompt_token_ids is not None
-        return apply_all_penalties(
-            logits,
-            sampling_metadata.prompt_token_ids,
-            sampling_metadata.presence_penalties,
-            sampling_metadata.frequency_penalties,
-            sampling_metadata.repetition_penalties,
-            output_token_ids,
-        )
+
+        # On CPU backends (e.g. Houmo), penalty computation involves large-
+        # vocabulary tensor ops (scatter_add_, where, mul, etc.) that benefit
+        # significantly from multi-threading.  However, OMP_NUM_THREADS is
+        # typically set to 1 by the platform to prevent oversubscription
+        # during model forward passes.  We temporarily restore the thread
+        # count for penalty computation and revert afterwards.
+        is_cpu = logits.device.type == "cpu"
+        saved_num_threads = None
+        saved_omp = None
+        if is_cpu:
+            saved_num_threads = torch.get_num_threads()
+            # Try to use a reasonable number of threads for penalty ops.
+            # Use the system core count but cap it to avoid oversubscription.
+            cpu_count = os.cpu_count() or 1
+            desired_threads = max(1, min(cpu_count, 20))
+            # Also update OMP_NUM_THREADS env var for any native ops.
+            saved_omp = os.environ.get("OMP_NUM_THREADS")
+            os.environ["OMP_NUM_THREADS"] = str(desired_threads)
+            torch.set_num_threads(desired_threads)
+
+        try:
+            result = apply_all_penalties(
+                logits,
+                sampling_metadata.prompt_token_ids,
+                sampling_metadata.presence_penalties,
+                sampling_metadata.frequency_penalties,
+                sampling_metadata.repetition_penalties,
+                output_token_ids,
+            )
+        finally:
+            # Restore original thread settings.
+            if is_cpu:
+                torch.set_num_threads(saved_num_threads)
+                if saved_omp is not None:
+                    os.environ["OMP_NUM_THREADS"] = saved_omp
+                else:
+                    os.environ.pop("OMP_NUM_THREADS", None)
+
+        return result

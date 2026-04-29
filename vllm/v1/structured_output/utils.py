@@ -111,8 +111,11 @@ def apply_grammar_bitmask(
         # xgrammar expects a python list of indices but it will actually work with
         # a tensor. If we copy the tensor ourselves here we can do it in a non_blocking
         # manner and there should be no cpu sync within xgrammar.
+        # pin_memory is only supported on CUDA/accelerator backends;
+        # on CPU-based devices (e.g. Houmo) it raises RuntimeError.
+        pin_memory = logits.device.type not in ("cpu",)
         index_tensor = torch.tensor(
-            out_indices, dtype=torch.int32, device="cpu", pin_memory=True
+            out_indices, dtype=torch.int32, device="cpu", pin_memory=pin_memory
         )
         index_tensor = index_tensor.to(logits.device, non_blocking=True)
 
