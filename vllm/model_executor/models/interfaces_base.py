@@ -62,9 +62,7 @@ def _check_vllm_model_init(model: type[object] | object) -> bool:
 
 
 def _check_vllm_model_embed_input_ids(model: type[object] | object) -> bool:
-    print(f"##hm _check_vllm_model_embed_input_ids called with model: {model}")
     model_embed_input_ids = getattr(model, "embed_input_ids", None)
-    print(f"##hm _check_vllm_model_embed_input_ids getattr result: {model_embed_input_ids}, callable: {callable(model_embed_input_ids) if model_embed_input_ids else False}")
     if not callable(model_embed_input_ids):
         logger.warning(
             "The model (%s) is missing the `embed_input_ids` method.",
@@ -105,14 +103,11 @@ def is_vllm_model(model: object) -> TypeIs[VllmModel]: ...
 def is_vllm_model(
     model: type[object] | object,
 ) -> TypeIs[type[VllmModel]] | TypeIs[VllmModel]:
-    print(f"##hm is_vllm_model called with model: {model}")
-    result = (
+    return (
         _check_vllm_model_init(model)
         and _check_vllm_model_embed_input_ids(model)
         and _check_vllm_model_forward(model)
     )
-    print(f"##hm is_vllm_model result: {result}")
-    return result
 
 
 @runtime_checkable
@@ -140,16 +135,12 @@ def is_text_generation_model(model: object) -> TypeIs[VllmModelForTextGeneration
 def is_text_generation_model(
     model: type[object] | object,
 ) -> TypeIs[type[VllmModelForTextGeneration]] | TypeIs[VllmModelForTextGeneration]:
-    print(f"##hm call is_text_generation_model 1")
     if not is_vllm_model(model):
-        print(f"##hm call is_text_generation_model return 2 false")
         return False
 
     if isinstance(model, type):
-        print(f"##hm call is_text_generation_model return 3")
         return isinstance(model, VllmModelForTextGeneration)
 
-    print(f"##hm call is_text_generation_model return 4")
     return isinstance(model, VllmModelForTextGeneration)
 
 
@@ -202,18 +193,18 @@ class VllmModelForPooling(VllmModel[T_co], Protocol[T_co]):
     Indicates the
     [vllm.config.model.ModelConfig.score_type][]
     to use by default.
-
+    
     Scoring API handles score/rerank for:\n
     - "classify" task (score_type: cross-encoder models)\n
     - "embed" task (score_type: bi-encoder models)\n
     - "token_embed" task (score_type: late interaction models)\n
-
+    
     score_type defaults to bi-encoder, then the Score API uses the "embed" task.\n
-    If you set score_type to cross-encoder via
-    [vllm.model_executor.models.interfaces.SupportsCrossEncoding][],
+    If you set score_type to cross-encoder via 
+    [vllm.model_executor.models.interfaces.SupportsCrossEncoding][], 
     then the Score API uses the "score" task.\n
-    If you set score_type to late-interaction via
-    [vllm.model_executor.models.interfaces.SupportsLateInteraction][],
+    If you set score_type to late-interaction via 
+    [vllm.model_executor.models.interfaces.SupportsLateInteraction][], 
     then the Score API uses the "token_embed" task.\n
     """
 

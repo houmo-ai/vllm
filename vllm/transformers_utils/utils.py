@@ -365,10 +365,15 @@ def parse_gguf(gguf_file_path, additional_config=None):
         # 保存文件时，读取元数据对象的字段（替代原tensor）
         with open(gguf_file_path, 'rb') as f:
             for tensor_meta in tensors_info:
+                output_file_path = os.path.join(output_dir, tensor_meta.name)
+                # 判断文件是否已存在，存在则跳过当前循环
+                if os.path.exists(output_file_path):
+                    print(f"文件已存在，跳过保存：{output_file_path}")
+                    continue
                 # 从元数据对象获取字段，而非原tensor
                 f.seek(tensor_meta.data_offset)
                 data = f.read(tensor_meta.n_elements)
-                output_file_path = os.path.join(output_dir, tensor_meta.name)
+
                 file_dir = os.path.dirname(output_file_path)
                 os.makedirs(file_dir, exist_ok=True)
                 try:

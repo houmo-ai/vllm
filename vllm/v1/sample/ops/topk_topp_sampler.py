@@ -58,23 +58,35 @@ class TopKTopPSampler(nn.Module):
 
                 capability = current_platform.get_device_capability()
                 assert capability is not None
-                if not FlashInferBackend.supports_compute_capability(capability):
+                if FlashInferBackend.supports_compute_capability(capability):
+                    logger.info_once(
+                        "Using FlashInfer for top-p & top-k sampling.",
+                        scope="global",
+                    )
+                    self.forward = self.forward_cuda
+                elif envs.is_set("VLLM_USE_FLASHINFER_SAMPLER"):
+                    # User explicitly opted in but the GPU can't run FlashInfer.
                     capability_str = capability.as_version_str()
                     raise RuntimeError(
                         "FlashInfer does not support compute capability "
                         f"{capability_str}, unset VLLM_USE_FLASHINFER_SAMPLER=1."
                     )
-                # Users must opt in explicitly via VLLM_USE_FLASHINFER_SAMPLER=1.
-                logger.info_once(
-                    "Using FlashInfer for top-p & top-k sampling.",
-                    scope="global",
-                )
-                self.forward = self.forward_cuda
+                else:
+                    # Default-on path; hardware can't run FlashInfer →
+                    # quietly fall back to the PyTorch-native sampler
+                    # instead of failing server startup.
+                    logger.warning_once(
+                        "FlashInfer top-p/top-k sampling not supported on "
+                        "compute capability %s; falling back to PyTorch-native "
+                        "sampler. Set VLLM_USE_FLASHINFER_SAMPLER=0 to silence.",
+                        capability.as_version_str(),
+                    )
+                    self.forward = self.forward_native
             else:
-                logger.debug_once(
-                    "FlashInfer top-p/top-k sampling is available but disabled "
-                    "by default. Set VLLM_USE_FLASHINFER_SAMPLER=1 to opt in "
-                    "after verifying accuracy for your workloads."
+                # User explicitly set VLLM_USE_FLASHINFER_SAMPLER=0.
+                logger.info_once(
+                    "FlashInfer top-p/top-k sampling disabled via "
+                    "VLLM_USE_FLASHINFER_SAMPLER=0; using PyTorch-native sampler."
                 )
                 self.forward = self.forward_native
 
@@ -87,6 +99,11 @@ class TopKTopPSampler(nn.Module):
                 self.forward = self.forward_native
             else:
                 self.forward = self.forward_cpu
+        elif current_platform.is_xpu():
+            if envs.VLLM_XPU_USE_SAMPLER_KERNEL:
+                self.forward = self.forward_xpu
+            else:
+                self.forward = self.forward_native
         elif (
             logprobs_mode not in ("processed_logits", "processed_logprobs")
             and rocm_aiter_ops.is_enabled()
@@ -267,6 +284,53 @@ class TopKTopPSampler(nn.Module):
             return torch.multinomial(renorm_probs, num_samples=1).view(-1)
         raise RuntimeError("aiter_sample was called with no active top-k or top-p.")
 
+    def forward_xpu(
+        self,
+        logits: torch.Tensor,
+        generators: dict[int, torch.Generator],
+        k: torch.Tensor | None,
+        p: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if generators:
+            logger.warning_once(
+                "xpu kernel topk_topp_sampler does not support "
+                "per-request generators. Falling back to "
+                "PyTorch-native implementation."
+            )
+            return self.forward_native(logits, generators, k, p)
+        random_sampled = torch.empty(
+            logits.shape[0], dtype=torch.int64, device=logits.device
+        )
+        logits_to_return = None
+        if (
+            self.logprobs_mode == "processed_logits"
+            or self.logprobs_mode == "processed_logprobs"
+        ):
+            logits_to_return = torch.empty_like(logits)
+
+        assert len(generators) != logits.shape[0], (
+            "xpu kernel topk_topp_sampler does not support batch-wise generators."
+        )
+        generator = torch.xpu.default_generators[logits.device.index]
+
+        state = generator.get_state()
+        seed, offset = state.view(torch.int64)
+        seeds = torch.tensor(
+            [seed, offset], dtype=torch.int64, device=torch.device("cpu")
+        )
+        # The XPU kernel expects k as int64 (Long), but the input batch
+        # stores top_k as int32. Cast here to avoid dtype mismatch.
+        if k is not None:
+            k = k.to(torch.int64)
+        torch.ops.vllm.xpu_topk_topp_sampler(
+            random_sampled, logits_to_return, logits, k, p, self.logprobs_mode, seeds
+        )
+        # The custom XPU sampler kernel consumes RNG values internally, so advance
+        # the default generator's offset to keep future draws deterministic.
+        offset += logits.numel()
+        state.view(torch.int64)[1] = offset
+        generator.set_state(state)
+        return random_sampled, logits_to_return
 
 # Note: this is a workaround for
 # https://github.com/pytorch/pytorch/pull/151218

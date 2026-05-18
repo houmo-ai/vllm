@@ -3,9 +3,9 @@
 from abc import ABC, abstractmethod
 
 import tokenizers
+import tokenizers.decoders
 from packaging import version
 from tokenizers import Tokenizer
-from tokenizers.decoders import DecodeStream
 from transformers import PreTrainedTokenizerFast
 
 from vllm.logger import init_logger
@@ -176,12 +176,11 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
 
         self.tokenizer: Tokenizer = tokenizer._tokenizer
 
-        #self.skip_special_tokens=False
-        #sampling_params.skip_special_tokens=False
-        #print(f"##hm skip special tokens set to false")
-
         # Use native prefill to prime the decode stream with prompt tokens.
-        self.stream = DecodeStream(
+        # Look up DecodeStream on the module so backend patches (e.g. the
+        # fastokens shim that replaces ``tokenizers.decoders.DecodeStream``)
+        # are honored regardless of import order.
+        self.stream = tokenizers.decoders.DecodeStream(
             ids=request.prompt_token_ids,
             skip_special_tokens=self.skip_special_tokens,
         )
@@ -241,7 +240,9 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
                 " for request %s, resetting decode stream.",
                 self.request_id,
             )
-            self.stream = DecodeStream(skip_special_tokens=self.skip_special_tokens)
+            self.stream = tokenizers.decoders.DecodeStream(
+                skip_special_tokens=self.skip_special_tokens
+            )
             token = self.stream.step(self.tokenizer, next_token_id)
         return token
 
