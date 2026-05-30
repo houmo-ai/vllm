@@ -1513,7 +1513,7 @@ class EngineArgs:
         vllm_target_device_name = os.getenv('VLLM_TARGET_DEVICE')
         if vllm_target_device_name!="cpu":
             try:
-                parse_gguf(self.model,self.additional_config)
+                parse_gguf(self.model,self.additional_config,self.speculative_config)
             except Exception as e:
                 # 捕获异常并处理
                 logger.error(f"发生错误: {e}")
@@ -1661,6 +1661,7 @@ class EngineArgs:
                 "target_parallel_config": target_parallel_config,
             }
         )
+        logger.info(f"##hm self.speculative_config is:{self.speculative_config}")
         return SpeculativeConfig(**self.speculative_config)
 
     def create_engine_config(

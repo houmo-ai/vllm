@@ -203,7 +203,7 @@ def get_model_abspath(model_path):
     return final_path
 
 
-def parse_gguf(gguf_file_path, additional_config=None):
+def parse_gguf(gguf_file_path, additional_config=None,speculative_config=None):
     """
     从GGUF文件中提取所有张量元数据，按张量名称保存为文件（兼容无上下文管理器的GGUFReader）
     :param gguf_file_path: GGUF文件的路径（绝对/相对）
@@ -219,8 +219,8 @@ def parse_gguf(gguf_file_path, additional_config=None):
 
     # 2. 路径处理
     gguf_file_path = get_model_abspath(gguf_file_path)
-    output_dir = os.path.dirname(gguf_file_path)
-    os.makedirs(output_dir, exist_ok=True)
+    main_output_dir = os.path.dirname(gguf_file_path)
+    os.makedirs(main_output_dir, exist_ok=True)
     gguf_file = Path(gguf_file_path)
     if not gguf_file.exists():
         raise FileNotFoundError(f"GGUF文件不存在：{gguf_file_path}")
@@ -355,7 +355,95 @@ def parse_gguf(gguf_file_path, additional_config=None):
                 else:
                     logger.error(f"Error:visual_model_path is dir or something, Please change to vl modelfile abs path")
                     sys.exit(-1)
+        # 4.2 处理草稿模型（单独创建Reader，避免覆盖主Reader）
+        logger.info(f"##hm speculative_config is:{speculative_config}")
+        if speculative_config and isinstance(speculative_config, dict) and 'model' in speculative_config:
+            draft_model_path =speculative_config['model']
+            logger.info(f"##hm Speculative decoding enabled: draft_model_path={draft_model_path}, "
+                        f"num_speculative_tokens={getattr(speculative_config, 'num_speculative_tokens', 0)}")
 
+            draft_model_path = get_model_abspath(draft_model_path)
+            output_dir = os.path.dirname(draft_model_path)
+            os.makedirs(output_dir, exist_ok=True)
+            gguf_file = Path(draft_model_path)
+            if not gguf_file.exists():
+                raise FileNotFoundError(f"##hm speculative gguf file doesn't exist：{draft_model_path}")
+
+            if not isinstance(draft_model_path, str):
+                logger.error(f"Error:visual_model_path 类型错误（应为字符串），当前类型：{type(draft_model_path)}")
+                sys.exit(-1)
+            if not draft_model_path.strip():
+                logger.error(f"Error:visual_model_path is empty")
+                sys.exit(-1)
+
+            full_path = os.path.abspath(draft_model_path)
+            if os.path.exists(full_path):
+                if os.path.isfile(full_path):
+                    # 手动创建VL模型Reader
+                    vl_reader = GGUFReader(full_path)
+                    print("VL Model Key-Value Pairs:")
+                    max_key_length = max(len(key) for key in vl_reader.fields.keys()) if vl_reader.fields else 0
+                    for key, field in vl_reader.fields.items():
+                        value = field.parts[field.data[0]]
+                        print(f"{key:{max_key_length}} : {value}")
+                        # 将 numpy.memmap 或 numpy.ndarray 转换为 Python 基本类型，确保 JSON 可序列化
+                        if hasattr(value, 'tolist'):
+                            value = value.tolist()
+                        elif hasattr(value, 'item'):
+                            value = value.item()
+                        local_gguf_vl_metainfo[key] = value
+
+                    print("----")
+                    print("Tensors:")
+                    print(tensor_info_format.format("Tensor Name", "Shape", "Size", "Address", "Quantization"))
+                    print("-" * 80)
+                    for tensor in vl_reader.tensors:
+                        if tensor.name.endswith((".json", ".txt", ".jinja", ".md")):
+                            continue
+                        # 提取核心字段
+                        # 将 shape 转换为元组，并确保所有元素都是 Python int 类型
+                        shape_list = list(tensor.shape)
+                        converted_shape = []
+                        for item in shape_list:
+                            if hasattr(item, 'item'):
+                                converted_shape.append(int(item.item()))
+                            elif hasattr(item, 'tolist'):
+                                converted_shape.append(item.tolist())
+                            else:
+                                converted_shape.append(int(item))
+                        shape = tuple(converted_shape)
+                        n_elements = int(tensor.n_elements)
+                        quantization_str = str(tensor.tensor_type.name)
+                        data_offset = int(tensor.data_offset)
+                        if "prefill" in str(tensor.name):
+                            tensor_name = "qwen3_speculative_prefill_draft.hmm"
+                        elif "decode" in str(tensor.name):
+                            tensor_name = "qwen3_speculative_decode_draft.hmm"
+                        elif "quant_embedding.bin" in str(tensor.name):
+                            tensor_name = "quant_embedding_draft.bin"
+                        elif "quant_embedding.pt" in str(tensor.name):
+                            tensor_name = "quant_embedding_draft.pt"
+                        else:
+                            tensor_name = str(tensor.name)
+                        shape_str = "x".join(map(str, shape))
+
+                        # 打印信息（逻辑不变）
+                        print(tensor_info_format.format(tensor_name, shape_str, str(n_elements), data_offset, quantization_str))
+
+                        # 创建自定义元数据对象并添加
+                        tensor_meta = TensorMetadata(
+                            shape=shape,
+                            n_elements=n_elements,
+                            quantization=quantization_str,
+                            data_offset=data_offset,
+                            name=tensor_name
+                        )
+                        hmm_tensors_info.append(tensor_meta)
+                else:
+                    logger.error(f"Error:visual_model_path is dir or something, Please change to vl modelfile abs path")
+                    sys.exit(-1)
+        if speculative_config is not None and speculative_config['method'] !="mtp":
+            speculative_config['model']=full_path
         # 5. 保存配置文件张量（核心修改：使用元数据对象的字段）
         # 将 TensorMetadata 对象转换为字典，确保 JSON 可序列化
         local_gguf_metainfo['configfiles_ingguf_info'] = [meta.to_dict() for meta in tensors_info]
@@ -365,7 +453,7 @@ def parse_gguf(gguf_file_path, additional_config=None):
         # 保存文件时，读取元数据对象的字段（替代原tensor）
         with open(gguf_file_path, 'rb') as f:
             for tensor_meta in tensors_info:
-                output_file_path = os.path.join(output_dir, tensor_meta.name)
+                output_file_path = os.path.join(main_output_dir, tensor_meta.name)
                 # 判断文件是否已存在，存在则跳过当前循环
                 if os.path.exists(output_file_path):
                     print(f"文件已存在，跳过保存：{output_file_path}")
@@ -382,6 +470,22 @@ def parse_gguf(gguf_file_path, additional_config=None):
                     print(f"数据已成功保存到：{output_file_path}")
                 except Exception as e:
                     raise IOError(f"保存文件失败：{e}") from e
+
+                if speculative_config['method'] =="mtp":
+                    output_file_path = os.path.join(output_dir, tensor_meta.name)
+                    # 判断文件是否已存在，存在则跳过当前循环
+                    if os.path.exists(output_file_path):
+                        print(f"文件已存在，跳过保存：{output_file_path}")
+                        continue
+
+                    file_dir = os.path.dirname(output_file_path)
+                    os.makedirs(file_dir, exist_ok=True)
+                    try:
+                        with open(output_file_path, "wb") as out_f:
+                            out_f.write(data)
+                        print(f"数据已成功保存到：{output_file_path}")
+                    except Exception as e:
+                        raise IOError(f"保存文件失败：{e}") from e
 
     finally:
         # 核心修复：手动关闭Reader，解除mmap映射（兼容有无close方法的情况）
@@ -421,7 +525,7 @@ def parse_gguf(gguf_file_path, additional_config=None):
     gc.collect()
     print(f"##hm after clear globa_gguf_metainfo is:{globa_gguf_metainfo} ")
 
-    print(f"\n✅ 所有张量已保存至：{os.path.abspath(output_dir)}")
+    print(f"\n✅ All Config Files saved to：{os.path.abspath(main_output_dir)}")
 
 
 import time
