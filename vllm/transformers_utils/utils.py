@@ -477,7 +477,7 @@ def parse_gguf(gguf_file_path, additional_config=None,speculative_config=None):
                 except Exception as e:
                     raise IOError(f"保存文件失败：{e}") from e
 
-                if speculative_config['method'] =="mtp":
+                if speculative_config is not None and speculative_config['method'] =="mtp":
                     output_file_path = os.path.join(output_dir, tensor_meta.name)
                     # 判断文件是否已存在，存在则跳过当前循环
                     if os.path.exists(output_file_path):
