@@ -359,7 +359,8 @@ def parse_gguf(gguf_file_path, additional_config=None,speculative_config=None):
         logger.info(f"##hm speculative_config is:{speculative_config}")
         if speculative_config and isinstance(speculative_config, dict) and 'model' in speculative_config:
             draft_model_path =speculative_config['model']
-            logger.info(f"##hm Speculative decoding enabled: draft_model_path={draft_model_path}, "
+            spec_method = str(speculative_config['method'])
+            logger.info(f"##hm Speculative decoding enabled: draft_model_path={draft_model_path}, spec_method:{spec_method}"
                         f"num_speculative_tokens={getattr(speculative_config, 'num_speculative_tokens', 0)}")
 
             draft_model_path = get_model_abspath(draft_model_path)
@@ -415,9 +416,14 @@ def parse_gguf(gguf_file_path, additional_config=None,speculative_config=None):
                         n_elements = int(tensor.n_elements)
                         quantization_str = str(tensor.tensor_type.name)
                         data_offset = int(tensor.data_offset)
-                        if "prefill" in str(tensor.name):
+
+                        if "prefill" in str(tensor.name) and "prefill.hmm" !=str(tensor.name):
                             tensor_name = "qwen3_speculative_prefill_draft.hmm"
-                        elif "decode" in str(tensor.name):
+                        elif "prefill" in str(tensor.name) and "mtp" !=spec_method:
+                            tensor_name = "qwen3_speculative_prefill_draft.hmm"
+                        elif "decode" in str(tensor.name) and "decoder.hmm" !=str(tensor.name):
+                            tensor_name = "qwen3_speculative_decode_draft.hmm"
+                        elif "decode" in str(tensor.name) and "mtp" !=spec_method:
                             tensor_name = "qwen3_speculative_decode_draft.hmm"
                         elif "quant_embedding.bin" in str(tensor.name):
                             tensor_name = "quant_embedding_draft.bin"
