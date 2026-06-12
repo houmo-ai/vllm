@@ -222,7 +222,64 @@ class OpenAIServingChat(OpenAIServing):
         if self.engine_client.errored:
             raise self.engine_client.dead_error
 
+        # Houmo: reject image/video requests when vision model is not loaded
+        error_check_ret = self._check_vision_support(request)
+        if error_check_ret is not None:
+            return error_check_ret
+
         return await self.openai_serving_render.render_chat(request)
+
+    def _check_vision_support(
+        self,
+        request: ChatCompletionRequest,
+    ) -> ErrorResponse | None:
+        """Houmo: reject image/video requests when vision model is not loaded.
+
+        When the server is started without --visual-model-path, the vision
+        encoder (ViT) is not loaded. Sending image requests in this case
+        would crash the engine. This check intercepts such requests at the
+        API layer and returns a proper HTTP 400 error instead.
+        """
+        vllm_config = getattr(self.engine_client, "vllm_config", None)
+        if vllm_config is None:
+            return None
+        additional_config = getattr(vllm_config, "additional_config", None)
+        if additional_config is None:
+            return None
+        visual_model_path = additional_config.get("visual_model_path", None)
+        if visual_model_path is not None:
+            return None  # Vision model is loaded, no restriction
+
+        # No vision model loaded — check if request contains image/video
+        if self._request_contains_image(request.messages):
+            return self.create_error_response(
+                "This model does not support image inputs because the vision "
+                "encoder (ViT) is not loaded. Please start the server with "
+                "a vision model (--visual-model-path) to enable image "
+                "support, or send text-only requests.",
+                err_type="BadRequestError",
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+        return None
+
+    @staticmethod
+    def _request_contains_image(
+        messages: list[Any],
+    ) -> bool:
+        """Check if any message in the request contains image or video content."""
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if content is None:
+                continue
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        if "image_url" in part or "video_url" in part \
+                                or "image" in part or "video" in part:
+                            return True
+            elif isinstance(content, str):
+                continue  # plain text content
+        return False
 
     async def create_chat_completion(
         self,

@@ -544,6 +544,38 @@ class ResponsesRequest(OpenAIBaseModel):
                     processed_input.append(item)
 
             else:
+                # Handle items that may be missing required fields
+                # For input_image inside message content, auto-fill missing
+                # 'detail' field with 'auto' (the default per OpenAI spec)
+                if isinstance(item, dict):
+                    item = dict(item)  # shallow copy to avoid mutating input
+                    # Auto-fill 'detail' for input_image items that lack it
+                    if item.get("type") == "input_image" and "detail" not in item:
+                        item["detail"] = "auto"
+                    # Validate and auto-fix content items inside messages
+                    if isinstance(item.get("content"), list):
+                        new_content = []
+                        for c in item["content"]:
+                            if isinstance(c, dict):
+                                ctype = c.get("type")
+                                # Auto-fill 'detail' for input_image
+                                if ctype == "input_image" and "detail" not in c:
+                                    c = {**c, "detail": "auto"}
+                                # Pre-validate content type to avoid Pydantic
+                                # Union explosion (222+ errors when type is
+                                # unknown). Valid types per OpenAI spec:
+                                # input_text, input_image, input_file
+                                if ctype is not None and ctype not in (
+                                    "input_text", "input_image", "input_file",
+                                ):
+                                    raise VLLMValidationError(
+                                        f"Unknown content type '{ctype}' in "
+                                        f"message. Valid types: input_text, "
+                                        f"input_image, input_file.",
+                                        parameter="input",
+                                    )
+                            new_content.append(c)
+                        item["content"] = new_content
                 processed_input.append(item)
 
         data["input"] = processed_input

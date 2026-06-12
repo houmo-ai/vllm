@@ -278,7 +278,30 @@ def process_lora_modules(
 
 def sanitize_message(message: str) -> str:
     # Avoid leaking memory address from object reprs
-    return re.sub(r" at 0x[0-9a-f]+>", ">", message)
+    message = re.sub(r" at 0x[0-9a-f]+>", ">", message)
+    # Truncate long base64 data in error messages to avoid huge responses
+    # Pattern: data:image/...;base64,<long_base64_string> or just base64
+    # strings after 'base64,' in image_url fields
+    message = re.sub(
+        r"(data:image/[a-zA-Z+]+;base64,)[A-Za-z0-9+/=]{100,}",
+        r"\1<truncated>",
+        message,
+    )
+    # Also truncate raw base64 strings that appear in validation error
+    # output (not prefixed with data:image URI)
+    message = re.sub(
+        r"(image_url.*?'data:image/[a-zA-Z+]+;base64,)[A-Za-z0-9+/=]{100,}",
+        r"\1<truncated>",
+        message,
+    )
+    # Truncate any remaining very long base64-like strings (sequences of
+    # base64 chars longer than 200 chars that look like encoded data)
+    message = re.sub(
+        r"([A-Za-z0-9+/=]{200}[A-Za-z0-9+/=]+)",
+        r"<truncated_base64_data>",
+        message,
+    )
+    return message
 
 
 def log_version_and_model(lgr: Logger, version: str, model_name: str) -> None:

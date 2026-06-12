@@ -348,5 +348,16 @@ class LogprobsProcessor:
     def update_from_output(self, output: EngineCoreOutput) -> None:
         if output.new_logprobs is not None:
             self._update_sample_logprobs(output.new_logprobs)
+        elif (
+            self.num_logprobs is not None
+            and output.new_token_ids
+        ):
+            # When speculative decoding (e.g. MTP) produces multiple tokens
+            # without logprobs, pad with None entries to keep the logprobs
+            # list in sync with the detokenizer's token list.
+            # Without this, _create_chat_logprobs will index out of range
+            # because len(logprobs) < len(token_ids).
+            for _ in output.new_token_ids:
+                self.logprobs.append(None)
         if output.new_prompt_logprobs_tensors is not None:
             self._update_prompt_logprobs(output.new_prompt_logprobs_tensors)

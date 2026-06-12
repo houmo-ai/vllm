@@ -421,6 +421,26 @@ async def validation_exception_handler(req: Request, exc: RequestValidationError
                 param = ctx_error.parameter
                 break
 
+    # Limit the number of validation errors to avoid huge responses.
+    # When Pydantic fails to match a Union type, it generates errors
+    # for every variant (e.g., 200+ errors for a single bad field),
+    # each repeating the full input data and long Union type paths.
+    MAX_ERRORS_SHOWN = 3
+    if len(errors) > MAX_ERRORS_SHOWN:
+        original_count = len(errors)
+        errors = errors[:MAX_ERRORS_SHOWN]
+        # Append a summary error instead of listing all
+        errors.append({
+            "type": "too_many_errors",
+            "loc": (),
+            "msg": (
+                f"... and {original_count - MAX_ERRORS_SHOWN} more "
+                "validation errors omitted. Please check your request "
+                "parameters for typos or unsupported fields."
+            ),
+            "input": None,
+        })
+
     exc_str = str(exc)
     errors_str = str(errors)
 
@@ -428,6 +448,13 @@ async def validation_exception_handler(req: Request, exc: RequestValidationError
         message = f"{exc_str} {errors_str}"
     else:
         message = exc_str
+
+    # Truncate overly long error messages to prevent huge responses
+    MAX_MESSAGE_LENGTH = 2000
+    if len(message) > MAX_MESSAGE_LENGTH:
+        message = message[:MAX_MESSAGE_LENGTH] + (
+            f"... (truncated, total {len(message)} characters)"
+        )
 
     err = ErrorResponse(
         error=ErrorInfo(
