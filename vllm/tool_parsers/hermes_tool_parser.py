@@ -52,6 +52,15 @@ def _is_valid_json(text: str) -> bool:
 
 
 class Hermes2ProToolParser(ToolParser):
+    # When using structural_tag for guided decoding, the model outputs
+    # Hermes-format JSON like {"name": "...", "arguments": {...}} wrapped
+    # in <tool_call_start>/<tool_call_end> tokens. The serving layer's
+    # "required" branch expects FunctionDefinition format
+    # [{"name": "...", "parameters": {...}}] which is incompatible.
+    # Set False so that "required" and named tool_choice also go through
+    # extract_tool_calls(), which correctly parses the Hermes format.
+    supports_required_and_named: bool = False
+
     def __init__(self, tokenizer: TokenizerLike, tools: list[Tool] | None = None):
         super().__init__(tokenizer, tools)
 
@@ -78,15 +87,197 @@ class Hermes2ProToolParser(ToolParser):
         # Streaming state: what has been sent to the client.
         self._sent_content_idx: int = 0
 
+    def get_structural_tag(self, request):
+        """Return structural tag for hermes-style tool calling.
+
+        This enables guided decoding to properly handle the tool_call_end
+        token, which plain JSON-schema guided decoding would block,
+        causing the model to loop indefinitely.
+        """
+        from vllm.tool_parsers.structural_tag_registry import (
+            _get_function_parameters,
+        )
+        from vllm.entrypoints.openai.chat_completion.protocol import (
+            ChatCompletionNamedToolChoiceParam,
+        )
+        from xgrammar import StructuralTag
+        from xgrammar.structural_tag import (
+            AnyTextFormat,
+            ConstStringFormat,
+            JSONSchemaFormat,
+            SequenceFormat,
+            TagFormat,
+            TagsWithSeparatorFormat,
+            TriggeredTagsFormat,
+        )
+
+        # Hermes tool call format:
+        #   <tool_call_start>\n{"name": ..., "arguments": ...}\n<tool_call_end>
+        start_tok = self.tool_call_start_token
+        end_tok = self.tool_call_end_token
+        tool_call_begin = start_tok + "\n"
+        tool_call_end_str = "\n" + end_tok
+        tool_call_trigger = start_tok
+        think_tag_end = "<|im_end|>"
+        think_exclude_tokens = ["<|think|>", "<|/think|>"]
+
+        # Detect reasoning from the request's thinking configuration
+        reasoning = False
+        if hasattr(request, 'thinking') and request.thinking:
+            reasoning = True
+
+        # Normalize tool_choice
+        tool_choice = request.tool_choice
+        if tool_choice is None or tool_choice == "none":
+            return None
+        elif tool_choice == "auto":
+            simplified_choice = "auto"
+        elif tool_choice == "required":
+            simplified_choice = "required"
+        else:
+            simplified_choice = "forced"
+
+        tools = request.tools
+        if not tools:
+            return None
+
+        if simplified_choice == "auto":
+            tags = []
+            for tool in tools:
+                function = tool.function
+                parameters = _get_function_parameters(function)
+                tags.append(
+                    TagFormat(
+                        begin=tool_call_begin + '{"name": "' + function.name + '", "arguments": ',
+                        content=JSONSchemaFormat(
+                            json_schema=parameters,
+                            style="json",
+                        ),
+                        end='}' + tool_call_end_str,
+                    )
+                )
+
+            if tags:
+                suffix_tag = TriggeredTagsFormat(
+                    triggers=[tool_call_trigger],
+                    tags=tags,
+                    excludes=think_exclude_tokens,
+                )
+            else:
+                suffix_tag = AnyTextFormat(excludes=think_exclude_tokens)
+
+        elif simplified_choice == "forced":
+            # When tool_choice is a named function, filter tools to the
+            # specified one (matching _normalize_tool_choice behavior).
+            if isinstance(request.tool_choice,
+                          ChatCompletionNamedToolChoiceParam):
+                tool_name = request.tool_choice.function.name
+                filtered_tools = [
+                    tool for tool in tools
+                    if tool.function.name == tool_name
+                ]
+                if not filtered_tools:
+                    raise ValueError(
+                        f"The tool with name '{tool_name}' is not found "
+                        "in the tools list."
+                    )
+                forced_tool = filtered_tools[0]
+            else:
+                forced_tool = tools[0]
+            function = forced_tool.function
+            parameters = _get_function_parameters(function)
+            suffix_tag = TagFormat(
+                begin=tool_call_begin + '{"name": "' + function.name + '", "arguments": ',
+                content=JSONSchemaFormat(
+                    json_schema=parameters,
+                    style="json",
+                ),
+                end='}' + tool_call_end_str,
+            )
+
+        elif simplified_choice == "required":
+            tags = []
+            for tool in tools:
+                function = tool.function
+                parameters = _get_function_parameters(function)
+                tags.append(
+                    TagFormat(
+                        begin=tool_call_begin + '{"name": "' + function.name + '", "arguments": ',
+                        content=JSONSchemaFormat(
+                            json_schema=parameters,
+                            style="json",
+                        ),
+                        end='}' + tool_call_end_str,
+                    )
+                )
+            assert len(tags) > 0
+            suffix_tag = TagsWithSeparatorFormat(
+                tags=tags,
+                separator="",
+                at_least_one=True,
+            )
+
+        if not reasoning:
+            return StructuralTag(format=suffix_tag)
+
+        prefix_tag = SequenceFormat(
+            elements=[
+                TagFormat(begin="", content=AnyTextFormat(), end=think_tag_end),
+                ConstStringFormat(value="\n\n"),
+            ]
+        )
+        return StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
+
     def adjust_request(
         self, request: ChatCompletionRequest | ResponsesRequest
     ) -> ChatCompletionRequest | ResponsesRequest:
-        request = super().adjust_request(request)
         if request.tools and request.tool_choice != "none":
             # do not skip special tokens because the tool_call tokens are
             # marked "special" in some models. Since they are skipped
             # prior to the call to the tool parser, it breaks tool calling.
             request.skip_special_tokens = False
+
+            # Use structural_tag for guided decoding first.
+            # This properly handles the tool_call_end token, which plain
+            # JSON-schema guided decoding would block, causing the model
+            # to loop indefinitely after generating the tool call JSON.
+            if isinstance(request, ChatCompletionRequest):
+                structural_tag = self.get_structural_tag(request)
+                if structural_tag is not None:
+                    import json as _json
+                    from vllm.sampling_params import StructuredOutputsParams
+                    if request.structured_outputs is None:
+                        request.structured_outputs = StructuredOutputsParams(
+                            structural_tag=_json.dumps(
+                                structural_tag.model_dump()),
+                        )
+                    else:
+                        request.structured_outputs.structural_tag = _json.dumps(
+                            structural_tag.model_dump()
+                        )
+                    # Clear the json schema to avoid conflict
+                    if (request.structured_outputs.json is not None
+                            and request.structured_outputs.structural_tag
+                            is not None):
+                        request.structured_outputs.json = None
+
+            # Add the tool_call_end_token to stop_token_ids so that
+            # generation stops after a complete tool call.
+            tool_call_end_token_id = self.vocab.get(self.tool_call_end_token)
+            if (tool_call_end_token_id is not None
+                    and tool_call_end_token_id not in
+                    (request.stop_token_ids or [])):
+                request.stop_token_ids = request.stop_token_ids or []
+                request.stop_token_ids.append(tool_call_end_token_id)
+
+            # Skip super().adjust_request() when structural_tag is set,
+            # to avoid it being overridden by plain JSON schema.
+            if (isinstance(request, ChatCompletionRequest)
+                    and request.structured_outputs is not None
+                    and request.structured_outputs.structural_tag is not None):
+                return request
+
+        request = super().adjust_request(request)
         return request
 
     def extract_tool_calls(
