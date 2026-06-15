@@ -263,8 +263,11 @@ class Hermes2ProToolParser(ToolParser):
 
             # Add the tool_call_end_token to stop_token_ids so that
             # generation stops after a complete tool call.
+            # Note: Only ChatCompletionRequest has stop_token_ids;
+            # ResponsesRequest handles this via default_sampling_params.
             tool_call_end_token_id = self.vocab.get(self.tool_call_end_token)
             if (tool_call_end_token_id is not None
+                    and isinstance(request, ChatCompletionRequest)
                     and tool_call_end_token_id not in
                     (request.stop_token_ids or [])):
                 request.stop_token_ids = request.stop_token_ids or []
