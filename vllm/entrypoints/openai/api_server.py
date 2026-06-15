@@ -179,9 +179,35 @@ def build_app(
         app = FastAPI(lifespan=lifespan)
     app.state.args = args
 
-    from vllm.entrypoints.serve import register_vllm_serve_api_routers
+    # Best-effort import of well-known plugin packages so they can
+    # monkey-patch the community hooks below. ``vllm_houmo`` registers
+    # itself through ``vllm.platform_plugins`` (only resolved in the
+    # EngineCore worker), so we eagerly import it here too. Add more
+    # packages to this block as needed; the import is wrapped in
+    # ``try/except ImportError`` so the absence of any one plugin is
+    # never fatal.
+    try:
+        import vllm_houmo
+    except ImportError:
+        vllm_houmo = None  # type: ignore[assignment]
+    if vllm_houmo is not None and hasattr(vllm_houmo, "apply_patches"):
+        # vllm_houmo intentionally defers its monkey-patch until
+        # *after* vLLM has finished its own top-level imports, since
+        # applying it earlier can race with vLLM's
+        # ``vllm.config.CompilationConfig`` import. Calling
+        # ``apply_patches()`` here is safe because build_app() runs
+        # after the entire api_server module has been imported.
+        vllm_houmo.apply_patches()
+
+    from vllm.entrypoints.serve import (
+        register_vllm_community_routers,
+        register_vllm_serve_api_routers,
+    )
 
     register_vllm_serve_api_routers(app)
+
+    # Community / plugin hook (default no-op; patched by vllm_houmo et al.)
+    register_vllm_community_routers(app)
 
     from vllm.entrypoints.openai.models.api_router import (
         attach_router as register_models_api_router,
@@ -425,6 +451,11 @@ async def init_app_state(
         from vllm.entrypoints.pooling.factories import init_pooling_state
 
         init_pooling_state(engine_client, state, args, request_logger, supported_tasks)
+
+    # Community / plugin hook (default no-op; patched by vllm_houmo et al.)
+    from vllm.entrypoints.serve import init_vllm_community_app_state
+
+    await init_vllm_community_app_state(engine_client, state, args)
 
     state.enable_server_load_tracking = args.enable_server_load_tracking
     state.server_load_metrics = 0
