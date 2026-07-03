@@ -588,19 +588,22 @@ class DelegatingParser(Parser):
         function_name_returned: bool = False,
     ) -> tuple[DeltaMessage | None, bool]:
         assert self._tool_parser is not None
+        supports_required_and_named = getattr(
+            self._tool_parser, "supports_required_and_named", True
+        )
+
         if (
-            request.tool_choice
+            supports_required_and_named
+            and request.tool_choice
             and isinstance(
                 request.tool_choice,
                 (ToolChoiceFunction, ChatCompletionNamedToolChoiceParam),
             )
         ):
             # When a specific function is forced via tool_choice, use
-            # extract_named_tool_call_streaming regardless of
-            # supports_required_and_named, to be consistent with the
-            # non-streaming path in _parse_tool_calls which handles
-            # named tool_choice directly without checking
-            # supports_required_and_named.
+            # extract_named_tool_call_streaming for parsers that support
+            # required/named tool choice (they output FunctionDefinition
+            # format that the streaming helper expects).
             delta_message, function_name_returned = extract_named_tool_call_streaming(
                 delta_text=delta_text,
                 function_name=self._get_function_name(request),
@@ -611,12 +614,11 @@ class DelegatingParser(Parser):
             )
             return delta_message, function_name_returned
 
-        if request.tool_choice == "required":
-            # When tool_choice is "required", use the generic
-            # extract_required_tool_call_streaming regardless of
-            # supports_required_and_named, to be consistent with the
-            # non-streaming path in _parse_tool_calls which handles
-            # "required" directly without checking supports_required_and_named.
+        if supports_required_and_named and request.tool_choice == "required":
+            # When tool_choice is "required" and the parser supports
+            # required/named tool choice, use the generic
+            # extract_required_tool_call_streaming which expects
+            # FunctionDefinition array format.
             delta_message, function_name_returned = (
                 extract_required_tool_call_streaming(
                     previous_text=previous_text,
@@ -628,6 +630,10 @@ class DelegatingParser(Parser):
                 )
             )
             return delta_message, function_name_returned
+
+        # For parsers that don't support required/named tool choice
+        # (e.g. Hermes2ProToolParser which outputs Hermes-format JSON),
+        # fall through to the parser's own extract_tool_calls_streaming.
         return self.extract_tool_calls_streaming(
             previous_text,
             current_text,
