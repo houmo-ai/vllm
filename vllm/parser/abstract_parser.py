@@ -592,18 +592,21 @@ class DelegatingParser(Parser):
             self._tool_parser, "supports_required_and_named", True
         )
 
+        # ResponsesRequest always uses FunctionDefinition array format
+        # for "required"/named tool_choice (via text.format json_schema),
+        # regardless of the tool parser's supports_required_and_named flag.
+        # ChatCompletionRequest with hermes parser uses structural_tag to
+        # output Hermes-format JSON, so it needs the fall-through path.
+        is_responses_request = isinstance(request, ResponsesRequest)
+
         if (
-            supports_required_and_named
+            (supports_required_and_named or is_responses_request)
             and request.tool_choice
             and isinstance(
                 request.tool_choice,
                 (ToolChoiceFunction, ChatCompletionNamedToolChoiceParam),
             )
         ):
-            # When a specific function is forced via tool_choice, use
-            # extract_named_tool_call_streaming for parsers that support
-            # required/named tool choice (they output FunctionDefinition
-            # format that the streaming helper expects).
             delta_message, function_name_returned = extract_named_tool_call_streaming(
                 delta_text=delta_text,
                 function_name=self._get_function_name(request),
@@ -614,11 +617,8 @@ class DelegatingParser(Parser):
             )
             return delta_message, function_name_returned
 
-        if supports_required_and_named and request.tool_choice == "required":
-            # When tool_choice is "required" and the parser supports
-            # required/named tool choice, use the generic
-            # extract_required_tool_call_streaming which expects
-            # FunctionDefinition array format.
+        if (supports_required_and_named or is_responses_request) and \
+                request.tool_choice == "required":
             delta_message, function_name_returned = (
                 extract_required_tool_call_streaming(
                     previous_text=previous_text,
@@ -631,9 +631,10 @@ class DelegatingParser(Parser):
             )
             return delta_message, function_name_returned
 
-        # For parsers that don't support required/named tool choice
-        # (e.g. Hermes2ProToolParser which outputs Hermes-format JSON),
-        # fall through to the parser's own extract_tool_calls_streaming.
+        # For ChatCompletionRequest with parsers that don't support
+        # required/named tool choice (e.g. Hermes2ProToolParser which
+        # outputs Hermes-format JSON via structural_tag), fall through
+        # to the parser's own extract_tool_calls_streaming.
         return self.extract_tool_calls_streaming(
             previous_text,
             current_text,
