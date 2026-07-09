@@ -55,6 +55,10 @@ from openai.types.responses import (
     response_text_delta_event,
 )
 from openai.types.responses.response_output_item import McpCall
+from openai.types.responses.response_output_text import (
+    Logprob as StaticLogprob,
+    LogprobTopLogprob as StaticTopLogprob,
+)
 from openai.types.responses.response_reasoning_item import (
     Content as ResponseReasoningTextContent,
 )
@@ -76,6 +80,55 @@ TOOL_NAME_TO_MCP_SERVER_LABEL: Final[dict[str, str]] = {
     "container": "container",
     "browser": "web_search_preview",
 }
+
+
+def _to_static_logprob(
+    delta_logprob: response_text_delta_event.Logprob,
+) -> StaticLogprob:
+    """Convert a streaming (delta) Logprob into a static ResponseOutputText
+    Logprob. The static variant requires a ``bytes`` field (utf-8 encoding of
+    the token text) which the streaming variants omit; we reconstruct it so
+    that the aggregated logprobs carried by ``response.output_text.done`` /
+    ``response.content_part.done`` / ``response.output_item.done`` (and hence
+    the final ``response.completed`` payload) match the non-streaming shape.
+    """
+    token_text = delta_logprob.token or ""
+    return StaticLogprob(
+        token=token_text,
+        bytes=list(token_text.encode("utf-8", errors="replace")),
+        logprob=delta_logprob.logprob,
+        top_logprobs=[
+            StaticTopLogprob(
+                token=t.token or "",
+                bytes=list((t.token or "").encode("utf-8", errors="replace")),
+                logprob=t.logprob,
+            )
+            for t in (delta_logprob.top_logprobs or [])
+        ],
+    )
+
+
+def _to_done_logprob(
+    delta_logprob: response_text_delta_event.Logprob,
+) -> response_text_delta_event.Logprob:
+    """Re-construct a streaming Logprob as the Logprob type expected by
+    ``ResponseTextDoneEvent`` (``response_text_done_event.Logprob``). Both
+    types share the same fields (token/logprob/top_logprobs, no bytes), so
+    this is effectively a re-typing through the model's own validation to
+    satisfy pydantic's per-class identity checks.
+    """
+    from openai.types.responses.response_text_done_event import (
+        Logprob as DoneLogprob,
+        LogprobTopLogprob as DoneTopLogprob,
+    )
+    return DoneLogprob(
+        token=delta_logprob.token,
+        logprob=delta_logprob.logprob,
+        top_logprobs=[
+            DoneTopLogprob(token=t.token, logprob=t.logprob)
+            for t in (delta_logprob.top_logprobs or [])
+        ],
+    )
 
 
 def _resolve_mcp_name_label(recipient: str) -> tuple[str, str]:
@@ -822,6 +875,7 @@ class SimpleStreamingState:
     current_item_id: str = ""
     content_index: int = 0
     accumulated_text: str = ""
+    accumulated_logprobs: list = field(default_factory=list)
     tool_call_id: str = ""
     tool_call_name: str = ""
     tool_call_index: int | None = None
@@ -836,6 +890,7 @@ def emit_simple_content_open(
     state.current_item_id = random_uuid()
     state.content_index = 0
     state.accumulated_text = ""
+    state.accumulated_logprobs = []
     return [
         ResponseOutputItemAddedEvent(
             type="response.output_item.added",
@@ -871,6 +926,8 @@ def emit_simple_content_delta(
     logprobs: list[response_text_delta_event.Logprob] | None = None,
 ) -> list[StreamingResponsesResponse]:
     state.accumulated_text += delta
+    if logprobs:
+        state.accumulated_logprobs.extend(logprobs)
     return [
         ResponseTextDeltaEvent(
             type="response.output_text.delta",
@@ -887,10 +944,14 @@ def emit_simple_content_delta(
 def emit_simple_content_done(
     state: SimpleStreamingState,
 ) -> list[StreamingResponsesResponse]:
+    delta_logprobs = list(state.accumulated_logprobs)
+    done_logprobs = [_to_done_logprob(lp) for lp in delta_logprobs]
+    static_logprobs = [_to_static_logprob(lp) for lp in delta_logprobs]
     part = ResponseOutputText(
         type="output_text",
         text=state.accumulated_text,
         annotations=[],
+        logprobs=static_logprobs,
     )
     events: list[StreamingResponsesResponse] = [
         ResponseTextDoneEvent(
@@ -899,7 +960,7 @@ def emit_simple_content_done(
             output_index=state.output_index,
             content_index=state.content_index,
             text=state.accumulated_text,
-            logprobs=[],
+            logprobs=done_logprobs,
             item_id=state.current_item_id,
         ),
         ResponseContentPartDoneEvent(
@@ -936,6 +997,7 @@ def emit_simple_reasoning_open(
     state.current_item_id = random_uuid()
     state.content_index = 0
     state.accumulated_text = ""
+    state.accumulated_logprobs = []
     return [
         ResponseOutputItemAddedEvent(
             type="response.output_item.added",
@@ -965,8 +1027,11 @@ def emit_simple_reasoning_open(
 def emit_simple_reasoning_delta(
     state: SimpleStreamingState,
     delta: str,
+    logprobs: list[response_text_delta_event.Logprob] | None = None,
 ) -> list[StreamingResponsesResponse]:
     state.accumulated_text += delta
+    if logprobs:
+        state.accumulated_logprobs.extend(logprobs)
     return [
         ResponseReasoningTextDeltaEvent(
             type="response.reasoning_text.delta",
@@ -975,6 +1040,7 @@ def emit_simple_reasoning_delta(
             output_index=state.output_index,
             content_index=state.content_index,
             delta=delta,
+            logprobs=logprobs or [],
         )
     ]
 
@@ -982,9 +1048,13 @@ def emit_simple_reasoning_delta(
 def emit_simple_reasoning_done(
     state: SimpleStreamingState,
 ) -> list[StreamingResponsesResponse]:
+    reasoning_logprobs = [
+        _to_static_logprob(lp) for lp in state.accumulated_logprobs
+    ]
     part = ResponseReasoningTextContent(
         text=state.accumulated_text,
         type="reasoning_text",
+        logprobs=reasoning_logprobs,
     )
     events: list[StreamingResponsesResponse] = [
         ResponseReasoningTextDoneEvent(
@@ -1231,11 +1301,13 @@ class SimpleStreamingEventProcessor:
             and delta_message.reasoning is not None
             and delta_message.content is not None
         ):
-            events.extend(handlers.delta_fn(self.state, delta_message.reasoning))
+            logprobs = get_logprobs(output) if get_logprobs else []
+            events.extend(
+                handlers.delta_fn(self.state, delta_message.reasoning, logprobs)
+            )
             events.extend(self.close_current())
             events.extend(self.open(_StateType.CONTENT))
             content_handlers = self._STATE_HANDLERS[_StateType.CONTENT]
-            logprobs = get_logprobs(output) if get_logprobs else []
             events.extend(
                 content_handlers.delta_fn(self.state, delta_message.content, logprobs)
             )
@@ -1250,7 +1322,8 @@ class SimpleStreamingEventProcessor:
             return []
         elif self.state.current_state == _StateType.REASONING:
             assert delta_message.reasoning is not None
-            return handlers.delta_fn(self.state, delta_message.reasoning)
+            logprobs = get_logprobs(output) if get_logprobs else []
+            return handlers.delta_fn(self.state, delta_message.reasoning, logprobs)
         elif self.state.current_state == _StateType.CONTENT:
             assert delta_message.content is not None
             logprobs = get_logprobs(output) if get_logprobs else []

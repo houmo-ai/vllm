@@ -48,6 +48,54 @@ from vllm.utils import random_uuid
 logger = init_logger(__name__)
 
 
+def _find_content_token_start(
+    model_output: str,
+    model_output_token_ids: Sequence[int],
+    reasoning_parser: "ReasoningParser | None" = None,
+) -> int:
+    """Return the index in ``model_output_token_ids`` at which content begins
+    (i.e. the number of leading reasoning tokens, including the reasoning end
+    marker such as ``</think>``). Returns 0 if no reasoning is detected.
+
+    This is needed to split the full ``logprobs`` list (which is ordered by
+    the original token sequence mixing reasoning + content) so that the
+    message item only receives the content portion, keeping logprobs aligned
+    with the content text.
+    """
+    end_str = None
+    if reasoning_parser is not None:
+        end_str = getattr(reasoning_parser, "end_token", None) or \
+                  getattr(reasoning_parser, "reasoning_end_str", None)
+    if end_str is None:
+        for m in ("</think>", "<|tool_call|>"):
+            if m in model_output:
+                end_str = m
+                break
+    if end_str is None or end_str not in model_output:
+        return 0
+
+    tokenizer = getattr(reasoning_parser, "model_tokenizer", None) if reasoning_parser else None
+    if tokenizer is None:
+        # Fallback: proportional estimate by character length.
+        marker_pos = model_output.find(end_str) + len(end_str)
+        total_len = max(len(model_output), 1)
+        est = int(round(len(model_output_token_ids) * marker_pos / total_len))
+        return max(0, min(est, len(model_output_token_ids)))
+
+    # Incremental decode: find the smallest prefix of token_ids whose decoded
+    # text contains the end marker. Content starts right after that token.
+    decoded = ""
+    for i, tid in enumerate(model_output_token_ids):
+        try:
+            decoded = tokenizer.decode(list(model_output_token_ids[: i + 1]))
+        except Exception:
+            decoded += tokenizer.decode([tid])
+        if end_str in decoded:
+            return i + 1
+    return 0
+
+
+
 @dataclass
 class StreamState:
     """Mutable state for ``Parser.parse_delta()``. One per stream."""
@@ -372,6 +420,28 @@ class DelegatingParser(Parser):
         # Build output items
         outputs: list[ResponseOutputItem] = []
 
+        # Split logprobs between reasoning and content. The full logprobs list
+        # is ordered by model_output_token_ids, which mixes reasoning and
+        # content tokens. Without splitting, the message item would receive
+        # the full list, causing logprob[i] to pair with a different token than
+        # content text[i] — a misalignment that trips nucleus top_p validators.
+        reasoning_logprobs: list[Logprob] | None = None
+        content_logprobs: list[Logprob] | None = None
+        if logprobs and model_output_token_ids and reasoning:
+            split_idx = _find_content_token_start(
+                model_output, model_output_token_ids,
+                reasoning_parser=self._reasoning_parser,
+            )
+            if 0 < split_idx <= len(logprobs):
+                reasoning_logprobs = logprobs[:split_idx]
+                content_logprobs = logprobs[split_idx:]
+            else:
+                reasoning_logprobs = logprobs
+                content_logprobs = logprobs
+        elif logprobs:
+            # No reasoning: all logprobs are content.
+            content_logprobs = logprobs
+
         # Add reasoning item if present
         if reasoning:
             reasoning_item = ResponseReasoningItem(
@@ -379,7 +449,21 @@ class DelegatingParser(Parser):
                 summary=[],
                 type="reasoning",
                 content=[
-                    ResponseReasoningTextContent(text=reasoning, type="reasoning_text")
+                    # NOTE: ``ResponseReasoningTextContent`` has no
+                    # ``logprobs`` field in the OpenAI Responses schema, but
+                    # its pydantic config is ``extra=allow``. We attach the
+                    # full output logprobs here so that, when a request
+                    # carries tool calls (and the message item is therefore
+                    # skipped because content is empty), the final
+                    # ``response.completed`` payload still carries the full
+                    # token-level probability array needed for offline
+                    # nucleus-sampling validation. The field is ignored by
+                    # clients that only recognise the standard schema.
+                    ResponseReasoningTextContent(
+                        text=reasoning,
+                        type="reasoning_text",
+                        logprobs=reasoning_logprobs if reasoning_logprobs is not None else logprobs,
+                    )
                 ],
                 status=None,  # NOTE: Only the last output item has status.
             )
@@ -387,11 +471,14 @@ class DelegatingParser(Parser):
 
         # Add message item if there's content
         if content:
+            # When reasoning is present, use only the content portion of
+            # logprobs (split above) so they align with content text.
+            message_logprobs = content_logprobs if reasoning else logprobs
             res_text_part = ResponseOutputText(
                 text=content,
                 annotations=[],
                 type="output_text",
-                logprobs=logprobs,
+                logprobs=message_logprobs,
             )
             message_item = ResponseOutputMessage(
                 id=f"msg_{random_uuid()}",

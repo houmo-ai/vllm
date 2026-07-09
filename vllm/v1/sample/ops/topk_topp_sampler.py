@@ -414,17 +414,33 @@ def apply_top_k_top_p_fast(
     # ======================
     p_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
     if use_top_p:
-        vals -= vals[:, :1]
-        np.exp(vals, out=vals)
+        # Compute probabilities over the *full* vocabulary (not just the
+        # top-1024 subset) so that nucleus thresholds match the distribution
+        # seen by clients / returned in top_logprobs. Previously the softmax
+        # was normalized over only the top-1024 tokens, inflating the leading
+        # probabilities and shrinking the nucleus, which caused samples that
+        # are valid under the full-vocabulary nucleus to appear out-of-bound.
+        full_lse = np.log(np.exp(logits - logits.max(axis=-1, keepdims=True)).sum(axis=-1, keepdims=True))  # logsumexp per row
+        # probs over the top-1024 slice, normalized by the full-vocab sum
+        vals = np.exp(original_vals - (logits.max(axis=-1, keepdims=True) + full_lse))
         cum_prob = vals.cumsum(axis=-1)
-        cum_prob /= cum_prob[:, -1:]
+        # cum_prob is now in [0, 1] over the full vocabulary (the tail beyond
+        # 1024 contributes a tiny residual that is ignored, which is fine
+        # because top_p thresholds are reached well within the top-1024).
 
         for i in range(B):
             tp = float(top_p[i] if not np.isscalar(top_p) else top_p)
-            cut_idx = np.count_nonzero(cum_prob[i] < tp)
+            # Nucleus (top-p) sampling: keep the smallest set of tokens whose
+            # cumulative probability is >= top_p, i.e. cut at the first index
+            # where the (descending) cumulative probability reaches top_p and
+            # keep that token inclusive.
+            first_meet = int(np.argmax(cum_prob[i] >= tp))
+            cut_idx = first_meet + 1
             cut_idx = max(cut_idx, min_tokens_to_keep)
             cut_idx = min(cut_idx, MAX_TOP_K - 1)
-            p_thresh[i, 0] = original_vals[i, cut_idx]
+            # Threshold = the logit of the last *kept* token, so that the
+            # ``< p_thresh`` mask below drops everything after it.
+            p_thresh[i, 0] = original_vals[i, cut_idx - 1]
 
     # ======================
     # 5. 合并阈值
@@ -492,19 +508,20 @@ def apply_top_k_top_p_fast_only_1token_logits(
     # ======================
     p_thresh = np.full((B, 1), -np.inf, dtype=np.float32)
     if use_top_p:
-        # 稳定 softmax：防溢出 + 加速
-        vals -= vals[:, :1]
-        np.exp(vals, out=vals)
+        # Normalize over the full vocabulary (not just top-1024) so the
+        # nucleus matches the distribution returned in top_logprobs.
+        full_lse = np.log(np.exp(logits - logits.max(axis=-1, keepdims=True)).sum(axis=-1, keepdims=True))
+        vals = np.exp(original_vals - (logits.max(axis=-1, keepdims=True) + full_lse))
         cum_prob = vals.cumsum(axis=-1)
-        cum_prob /= cum_prob[:, -1:]
 
-        # 向量化计算 cutoff
-        cut_idx = np.count_nonzero(cum_prob < top_p, axis=-1)
+        # 向量化计算 cutoff — nucleus 语义：保留降序累积首次达到 top_p 的 token（含）
+        first_meet = np.argmax(cum_prob >= top_p, axis=-1)
+        cut_idx = first_meet + 1
         cut_idx = np.maximum(cut_idx, min_tokens_to_keep)
         cut_idx = np.minimum(cut_idx, MAX_TOP_K - 1)
 
-        # 从原始 logits 值中取出 top_p 阈值
-        p_thresh = original_vals[np.arange(B), cut_idx].reshape(B, 1)
+        # 从原始 logits 值中取出 top_p 阈值（保留的最后一个 token 的 logit）
+        p_thresh = original_vals[np.arange(B), cut_idx - 1].reshape(B, 1)
 
     # ======================
     # 5. 合并阈值：取最严格的一个

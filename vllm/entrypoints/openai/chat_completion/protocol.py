@@ -836,7 +836,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
         """
         if not isinstance(data, dict):
             return data
-        messages = data.get("messages", [])
+        messages = data.get("messages") or []
         for msg in messages:
             # Check if this is a system message
             if isinstance(msg, dict) and msg.get("role") == "system":

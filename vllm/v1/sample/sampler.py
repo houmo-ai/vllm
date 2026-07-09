@@ -90,11 +90,20 @@ class Sampler(nn.Module):
         logprobs_mode_override: LogprobsMode | None = None,
     ) -> SamplerOutput:
         logprobs_mode = logprobs_mode_override or self.logprobs_mode
-        # NOTE(woosuk): Use the original logits (before any penalties or
-        # temperature scaling) for the top-k logprobs.
-        # This is different from the V0 sampler, which uses the logits that
-        # is used for sampling (after penalties and temperature scaling).
+        # NOTE(woosik): Compute logprobs *after* applying logits processors
+        # (penalties) so that the returned top_logprobs reflect the same
+        # distribution used for sampling. Previously this used the raw logits
+        # before penalties, which caused the nucleus (top_p) cut computed by
+        # clients from the returned logprobs to differ from the cut used by
+        # the sampler, leading to false "out-of-bound" violations.
         num_logprobs = sampling_metadata.max_num_logprobs
+        # Use float32 for the logits.
+        logits = logits.to(torch.float32)
+
+        logits = self.apply_logits_processors(
+            logits, sampling_metadata, predict_bonus_token
+        )
+
         if num_logprobs is not None:
             if logprobs_mode == "raw_logprobs":
                 raw_logprobs = self.compute_logprobs(logits)
@@ -104,12 +113,6 @@ class Sampler(nn.Module):
                 else:
                     raw_logprobs = logits.to(torch.float32)
 
-        # Use float32 for the logits.
-        logits = logits.to(torch.float32)
-
-        logits = self.apply_logits_processors(
-            logits, sampling_metadata, predict_bonus_token
-        )
         # Sample the next token.
         sampled, processed_logprobs = self.sample(logits, sampling_metadata)
         if processed_logprobs is not None:

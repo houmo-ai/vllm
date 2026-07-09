@@ -339,6 +339,10 @@ class ResponsesRequest(OpenAIBaseModel):
             max_tokens = min(self.max_output_tokens, default_max_tokens)
 
         default_sampling_params = default_sampling_params or {}
+        # Track whether each parameter was explicitly provided by the caller.
+        temperature_explicit = self.temperature is not None
+        top_p_explicit = self.top_p is not None
+        top_k_explicit = self.top_k is not None
         if (temperature := self.temperature) is None:
             temperature = default_sampling_params.get(
                 "temperature", self._DEFAULT_SAMPLING_PARAMS["temperature"]
@@ -351,6 +355,20 @@ class ResponsesRequest(OpenAIBaseModel):
             top_k = default_sampling_params.get(
                 "top_k", self._DEFAULT_SAMPLING_PARAMS["top_k"]
             )
+
+        # If the caller explicitly requested top_p (< 1.0) or top_k (> 0) but
+        # did not set temperature, the generation_config default temperature
+        # is often 0.0 (greedy). A greedy sampler bypasses top_p/top_k
+        # entirely, which silently makes those parameters no-ops. This trips
+        # API conformance tests that pass only ``top_p``. When temperature is
+        # inherited from defaults (not explicit) and equals 0, promote it to
+        # 1.0 so that top_p / top_k actually take effect. An explicit
+        # temperature=0 is still respected as greedy.
+        if not temperature_explicit and temperature == 0 and (
+            (top_p_explicit and top_p is not None and top_p < 1.0)
+            or (top_k_explicit and top_k is not None and top_k > 0)
+        ):
+            temperature = 1.0
 
         if (repetition_penalty := self.repetition_penalty) is None:
             repetition_penalty = default_sampling_params.get("repetition_penalty", 1.0)
@@ -417,13 +435,22 @@ class ResponsesRequest(OpenAIBaseModel):
         )
 
     def is_include_output_logprobs(self) -> bool:
-        """Check if the request includes output logprobs."""
-        if self.include is None:
-            return False
-        return (
-            isinstance(self.include, list)
-            and "message.output_text.logprobs" in self.include
-        )
+        """Check if the request includes output logprobs.
+
+        Output logprobs are requested when either:
+        1. ``include`` explicitly contains ``"message.output_text.logprobs"``
+           (the standard OpenAI Responses API way), or
+        2. ``top_logprobs`` is set to a positive value, which is the
+           shorthand used by many clients (and the OpenAI Chat Completions
+           API). Without this, passing only ``top_logprobs`` would be a
+           no-op and the streaming ``response.output_text.delta`` events
+           would carry empty ``logprobs`` lists.
+        """
+        if isinstance(self.include, list) and (
+            "message.output_text.logprobs" in self.include
+        ):
+            return True
+        return self.top_logprobs is not None and self.top_logprobs > 0
 
     @model_validator(mode="before")
     @classmethod
