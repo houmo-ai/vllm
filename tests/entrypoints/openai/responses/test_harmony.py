@@ -29,8 +29,7 @@ from .conftest import (
 
 logger = logging.getLogger(__name__)
 
-# 使用本地模型路径
-MODEL_NAME = "/home/user/szj_project/models/v1.0.0/gpt_oss_20b_128k/"
+MODEL_NAME = "openai/gpt-oss-20b"
 
 GET_WEATHER_SCHEMA = {
     "type": "function",
@@ -100,16 +99,11 @@ def server():
         "Harmony tests require gpt_oss package to be installed"
     )
     args = [
-        #"--model", MODEL_NAME,  # 明确指定模型路径
         "--enforce-eager",
         "--tool-server",
         "demo",
         "--max_model_len",
         "5000",
-        "--enable-auto-tool-choice",
-        "--tool-call-parser",
-        "openai",
-        "--trust-remote-code",  # 如果需要自定义模型代码
     ]
     env_dict = {
         **BASE_TEST_ENV,
@@ -120,7 +114,7 @@ def server():
         ),
         "VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS": "1",
     }
-    with RemoteOpenAIServer(MODEL_NAME, args, env_dict=env_dict,max_wait_seconds=300) as remote_server:
+    with RemoteOpenAIServer(MODEL_NAME, args, env_dict=env_dict) as remote_server:
         yield remote_server
 
 
@@ -1005,17 +999,21 @@ async def test_mcp_tool_multi_turn(client: OpenAI, model_name: str, server):
         (msg.get("recipient") or "").startswith("python")
         for msg in response1.output_messages
     )
+    parsed_output_messages = [
+        Message.from_dict(msg) for msg in response1.output_messages
+    ]
     tool_response_found = any(
-        msg.get("author", {}).get("role") == "tool"
-        and (msg.get("author", {}).get("name") or "").startswith("python")
-        for msg in response1.output_messages
+        (msg.author.role == "tool" and (msg.author.name or "").startswith("python"))
+        for msg in parsed_output_messages
     )
     assert tool_call_found, "MCP tool call not found in output_messages"
     assert tool_response_found, "MCP tool response not found in output_messages"
 
     # No developer messages expected for elevated tools
     developer_msgs = [
-        msg for msg in response1.input_messages if msg["author"]["role"] == "developer"
+        msg
+        for msg in (Message.from_dict(raw) for raw in response1.input_messages)
+        if msg.author.role == "developer"
     ]
     assert len(developer_msgs) == 0, "No developer message expected for elevated tools"
 
@@ -1125,12 +1123,10 @@ async def test_function_call_with_previous_input_messages(
     num_system = 0
     num_developer = 0
     num_tool = 0
-    for msg_dict in response_2.input_messages:
-        # input_messages use {"author": {"role": "..."}} format,
-        # not the top-level {"role": "..."} that Message.from_dict
-        # expects.
-        author = msg_dict.get("author", {})
-        role = author.get("role") if isinstance(author, dict) else None
+    for message in (
+        Message.from_dict(msg_dict) for msg_dict in response_2.input_messages
+    ):
+        role = message.author.role
         if role == "system":
             num_system += 1
         elif role == "developer":
@@ -1189,12 +1185,8 @@ async def test_system_prompt_override_no_duplication(client: OpenAI, model_name:
     assert response.output_text is not None
 
     num_system = 0
-    for msg in response.input_messages:
-        # input_messages use {"author": {"role": "system"}} format,
-        # not the top-level {"role": "system"} that Message.from_dict expects.
-        author = msg.get("author", {})
-        role = author.get("role") if isinstance(author, dict) else None
-        if role == "system":
+    for message in (Message.from_dict(msg) for msg in response.input_messages):
+        if message.author.role == "system":
             num_system += 1
     assert num_system == 1, f"Expected 1 system message, got {num_system}"
 

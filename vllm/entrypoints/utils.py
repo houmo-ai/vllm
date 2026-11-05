@@ -177,7 +177,14 @@ def get_max_tokens(
     input_length: int,
     default_sampling_params: dict,
     override_max_tokens: int | None = None,
+    truncate_prompt_tokens: int | None = None,
 ) -> int:
+    if truncate_prompt_tokens is not None:
+        limit = truncate_prompt_tokens
+        input_length = min(
+            input_length,
+            max_model_len if limit == -1 else limit,
+        )
     if max_model_len < input_length:
         raise ValueError(
             f"Input length ({input_length}) exceeds model's maximum "
@@ -236,13 +243,15 @@ def log_non_default_args(args: Namespace | EngineArgs):
 def should_include_usage(
     stream_options: "StreamOptions | None", enable_force_include_usage: bool
 ) -> tuple[bool, bool]:
+    if enable_force_include_usage:
+        return True, True
     if stream_options:
-        include_usage = stream_options.include_usage or enable_force_include_usage
+        include_usage = bool(stream_options.include_usage)
         include_continuous_usage = include_usage and bool(
             stream_options.continuous_usage_stats
         )
     else:
-        include_usage, include_continuous_usage = enable_force_include_usage, False
+        include_usage, include_continuous_usage = False, False
     return include_usage, include_continuous_usage
 
 
@@ -269,7 +278,30 @@ def process_lora_modules(
 
 def sanitize_message(message: str) -> str:
     # Avoid leaking memory address from object reprs
-    return re.sub(r" at 0x[0-9a-f]+>", ">", message)
+    message = re.sub(r" at 0x[0-9a-f]+>", ">", message)
+    # Truncate long base64 data in error messages to avoid huge responses
+    # Pattern: data:image/...;base64,<long_base64_string> or just base64
+    # strings after 'base64,' in image_url fields
+    message = re.sub(
+        r"(data:image/[a-zA-Z+]+;base64,)[A-Za-z0-9+/=]{100,}",
+        r"\1<truncated>",
+        message,
+    )
+    # Also truncate raw base64 strings that appear in validation error
+    # output (not prefixed with data:image URI)
+    message = re.sub(
+        r"(image_url.*?'data:image/[a-zA-Z+]+;base64,)[A-Za-z0-9+/=]{100,}",
+        r"\1<truncated>",
+        message,
+    )
+    # Truncate any remaining very long base64-like strings (sequences of
+    # base64 chars longer than 200 chars that look like encoded data)
+    message = re.sub(
+        r"([A-Za-z0-9+/=]{200}[A-Za-z0-9+/=]+)",
+        r"<truncated_base64_data>",
+        message,
+    )
+    return message
 
 
 def log_version_and_model(lgr: Logger, version: str, model_name: str) -> None:
@@ -307,6 +339,9 @@ def create_error_response(
 
     if isinstance(message, Exception):
         exc = message
+        logger.debug(
+            "create_error_response called with %s: %s", type(exc).__name__, exc
+        )
 
         from vllm.exceptions import VLLMNotFoundError, VLLMValidationError
 

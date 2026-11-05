@@ -55,3 +55,25 @@ def register_vllm_serve_api_routers(app: FastAPI):
     from .instrumentator import register_instrumentator_api_routers
 
     register_instrumentator_api_routers(app)
+
+
+def register_vllm_community_routers(app: FastAPI):
+    """Hook for third-party/community plugins to attach additional routers.
+
+    The default implementation is a no-op so the vLLM core stays unchanged
+    for users that do not register any plugin against this hook. Plugins
+    (for example ``vllm_houmo``) can monkey-patch this symbol at import
+    time to attach their own routers without forking vLLM.
+    """
+    return None
+
+
+async def init_vllm_community_app_state(engine_client, state, args):
+    """Hook for third-party/community plugins to populate app state.
+
+    The default implementation is a no-op. Plugins can monkey-patch this
+    symbol at import time to perform additional initialisation steps
+    (e.g. lazy resource allocation) once vLLM's core ``init_app_state``
+    has finished.
+    """
+    return None
